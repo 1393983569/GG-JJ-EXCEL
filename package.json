@@ -1,0 +1,9 @@
+{
+  "name": "gg-jj-tailor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "定制紧身衣订单系统 - PocketBase 后端",
+  "scripts": {
+    "test": "node tests/pricing.test.js"
+  }
+}

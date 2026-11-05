@@ -1,0 +1,35 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物 / 缓存
+dist/
+build/
+pb_public/
+admin/tsconfig.tsbuildinfo
+h5/.swc/
+*.tsbuildinfo
+.build_h5.log
+
+# PocketBase 运行时数据（数据库、上传文件）
+pb_data/
+# PocketBase 可执行文件（本地下载，无需入库）
+pocketbase.exe
+
+# 临时脚本 / 日志
+.tmp_*
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# 环境变量（本地覆盖）
+.env.local
+.env.*.local
+*.local
+
+# 编辑器 / 系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
