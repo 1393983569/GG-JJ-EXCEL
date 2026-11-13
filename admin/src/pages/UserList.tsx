@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Checkbox,
+  Drawer,
   Form,
   Input,
   Modal,
@@ -16,6 +17,7 @@ import {
 } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { pb, type PriceVersion, type Role, type Staff } from '../pb'
+import ShopConfigTable from '../components/ShopConfigTable'
 import { MENU_OPTIONS } from '../menus'
 
 export default function UserList() {
@@ -27,6 +29,13 @@ export default function UserList() {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Staff | null>(null)
   const [form] = Form.useForm()
+  const roleId = Form.useWatch('role', form)
+  const isAgent = roles.find((r) => r.id === roleId)?.code === 'agent'
+
+  // 账号维度的项目配置：成本价（内部定）+ 代理的客户价 + 三个开关 + 别名/排序/效果图
+  const [priceOpen, setPriceOpen] = useState(false)
+  const [priceAccount, setPriceAccount] = useState<Staff | null>(null)
+  const [priceRole, setPriceRole] = useState('')
 
   const load = async () => {
     setLoading(true)
@@ -93,6 +102,12 @@ export default function UserList() {
     }
   }
 
+  const openPrices = (u: Staff) => {
+    setPriceAccount(u)
+    setPriceRole(roles.find((r) => r.id === u.role)?.code || '')
+    setPriceOpen(true)
+  }
+
   const columns: TableProps<Staff>['columns'] = [
     { title: '账号', dataIndex: 'username', width: 140, render: (v) => <span className="mono">{v}</span> },
     { title: '姓名', dataIndex: 'display_name', width: 100 },
@@ -120,7 +135,21 @@ export default function UserList() {
       width: 80,
       render: (v) => (v ? <Tag color="success">启用</Tag> : <Tag>停用</Tag>),
     },
-    { title: '操作', width: 80, render: (_v, r) => <a onClick={() => openEdit(r)}>编辑</a> },
+    {
+      title: '操作',
+      width: 150,
+      render: (_v, r) => {
+        const code = roles.find((x) => x.id === r.role)?.code || ''
+        return (
+          <Space size={12}>
+            <a onClick={() => openEdit(r)}>编辑</a>
+            {code === 'factory' || code === 'agent' ? (
+              <a onClick={() => openPrices(r)}>项目配置</a>
+            ) : null}
+          </Space>
+        )
+      },
+    },
   ]
 
   return (
@@ -179,7 +208,12 @@ export default function UserList() {
               placeholder="选择角色会自动带出价格版本与菜单"
             />
           </Form.Item>
-          <Form.Item label="价格版本" name="price_version">
+          <Form.Item
+            label="价格版本"
+            name="price_version"
+            rules={isAgent ? [{ required: true, message: '请给代理分配价格版本' }] : []}
+            extra={isAgent ? '只是标识；实际项目价在「项目价格」里按账号维护' : undefined}
+          >
             <Select allowClear options={versions.map((v) => ({ value: v.id, label: v.name }))} />
           </Form.Item>
           <Form.Item label="可查看全部价格版本" name="can_view_all_prices" valuePropName="checked">
@@ -193,6 +227,18 @@ export default function UserList() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <Drawer
+        title={`项目配置 · ${priceAccount?.display_name || priceAccount?.username || ''}`}
+        open={priceOpen}
+        onClose={() => setPriceOpen(false)}
+        width={960}
+        destroyOnClose
+      >
+        {priceAccount ? (
+          <ShopConfigTable staffId={priceAccount.id} roleCode={priceRole} showCost costEditable />
+        ) : null}
+      </Drawer>
     </Card>
   )
 }

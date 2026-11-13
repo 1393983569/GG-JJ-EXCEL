@@ -3,6 +3,7 @@ import {
   App,
   Button,
   Card,
+  Checkbox,
   Col,
   Descriptions,
   Empty,
@@ -10,7 +11,6 @@ import {
   Input,
   InputNumber,
   Modal,
-  Radio,
   Row,
   Select,
   Space,
@@ -27,6 +27,7 @@ import {
   STATUS_MAP,
   yuan,
   toCents,
+  remarkHtml,
   type MeasureField,
   type MeasureGroup,
   type OrderPrice,
@@ -63,12 +64,18 @@ export default function OrderDetail() {
   const [itemsFinal, setItemsFinal] = useState<any[]>([])
   const [itemsAgent, setItemsAgent] = useState<any[]>([])
   const [terminalPrice, setTerminalPrice] = useState(0)
+  const [adjustments, setAdjustments] = useState<any[]>([])
   const [reviews, setReviews] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [reviewOpen, setReviewOpen] = useState(false)
   const [adjustOpen, setAdjustOpen] = useState(false)
   const [adjustTarget, setAdjustTarget] = useState<OrderPrice | null>(null)
   const [scoreOpen, setScoreOpen] = useState(false)
+  // 审核指派工厂后才算工厂成本，工厂也才能看到这张单
+  const [factories, setFactories] = useState<any[]>([])
+  const [assigning, setAssigning] = useState(false)
+  // 正在保存「工厂可见」的项目记录 id
+  const [savingVisible, setSavingVisible] = useState('')
   const [form] = Form.useForm()
   const [scoreForm] = Form.useForm()
 
@@ -86,8 +93,15 @@ export default function OrderDetail() {
       }
     }
     try {
-      const o = await pb.collection('orders').getOne<any>(id, { expand: 'agent' })
+      const o = await pb.collection('orders').getOne<any>(id, { expand: 'agent,factory' })
       setOrder(o)
+      if (canReview) {
+        setFactories(
+          (await safe(() =>
+            pb.collection('staff').getFullList({ filter: 'role_code = "factory" && is_active = true' })
+          )) || []
+        )
+      }
       setPrices((await safe(() => pb.collection('order_prices').getFullList({ filter: `order="${id}"`, expand: 'version' }))) || [])
       const tp: any = await safe(() => pb.collection('order_terminal_prices').getFirstListItem(`order="${id}"`))
       setTerminalPrice(tp?.amount_cents || 0)
@@ -115,6 +129,7 @@ export default function OrderDetail() {
       setItemsFinal((await safe(() => pb.collection('order_items').getFullList({ filter: `order="${id}" && stage="final"`, sort: 'sort' }))) || [])
       setItemsAgent((await safe(() => pb.collection('order_items').getFullList({ filter: `order="${id}" && stage="agent"`, sort: 'sort' }))) || [])
       setReviews((await safe(() => pb.collection('order_reviews').getFullList({ filter: `order="${id}"`, sort: '-created' }))) || [])
+      setAdjustments((await safe(() => pb.collection('order_adjustments').getFullList({ filter: `order="${id}"`, sort: 'created' }))) || [])
     } catch (e: any) {
       message.error(e?.message || '加载失败')
     } finally {
@@ -144,10 +159,11 @@ export default function OrderDetail() {
 
   const openAdjust = (p: OrderPrice) => {
     setAdjustTarget(p)
-    form.setFieldsValue({ price_mode: p.price_mode, amount: 0, reason: '', fixed: yuan(p.fixed_cents || 0) })
+    form.setFieldsValue({ amount: 0, reason: '' })
     setAdjustOpen(true)
   }
 
+  // 底价由管理员配的项目价算出，这里只能加价，且必须写清原因
   const submitAdjust = async () => {
     const v = await form.validateFields()
     if (!adjustTarget) return
@@ -158,16 +174,14 @@ export default function OrderDetail() {
           order_id: id,
           version: adjustTarget.version,
           amount_cents: toCents(v.amount || 0),
-          reason: v.reason || '',
-          price_mode: v.price_mode,
-          fixed_cents: toCents(v.fixed || 0),
+          reason: v.reason,
         },
       })
-      message.success('已更新')
+      message.success('已加价')
       setAdjustOpen(false)
       load()
     } catch (e: any) {
-      message.error(e?.message || '调价失败')
+      message.error(e?.message || '加价失败')
     }
   }
 
@@ -183,6 +197,38 @@ export default function OrderDetail() {
       load()
     } catch (e: any) {
       message.error(e?.message || '打分失败')
+    }
+  }
+
+  const assignFactory = async (factoryId?: string) => {
+    setAssigning(true)
+    try {
+      await pb.send('/api/gg/orders-assign-factory', {
+        method: 'POST',
+        body: { order_id: id, factory: factoryId || '' },
+      })
+      message.success(factoryId ? '已指派工厂' : '已取消指派')
+      load()
+    } catch (e: any) {
+      message.error(e?.message || '指派失败')
+    } finally {
+      setAssigning(false)
+    }
+  }
+
+  // 审核后生产项目可以逐个决定工厂能不能看到（打版费这类项目工厂不用看到）
+  const toggleFactoryVisible = async (item: any, visible: boolean) => {
+    setSavingVisible(item.id)
+    try {
+      await pb.send('/api/gg/orders-item-visibility', {
+        method: 'POST',
+        body: { order_item_id: item.id, factory_visible: visible },
+      })
+      setItemsFinal(itemsFinal.map((x) => (x.id === item.id ? { ...x, factory_visible: visible } : x)))
+    } catch (e: any) {
+      message.error(e?.message || '设置失败')
+    } finally {
+      setSavingVisible('')
     }
   }
 
@@ -252,11 +298,37 @@ export default function OrderDetail() {
               <Descriptions.Item label="终端售价">
                 {terminalPrice ? `¥${yuan(terminalPrice)}` : '-'}
               </Descriptions.Item>
+              <Descriptions.Item label="生产工厂" span={2}>
+                {canReview ? (
+                  <Select
+                    size="small"
+                    allowClear
+                    style={{ minWidth: 160 }}
+                    value={order.factory || undefined}
+                    placeholder="未指派（指派后才算工厂成本）"
+                    loading={assigning}
+                    onChange={assignFactory}
+                    options={factories.map((f) => ({
+                      value: f.id,
+                      label: f.display_name || f.username,
+                    }))}
+                  />
+                ) : (
+                  order.expand?.factory?.display_name || order.expand?.factory?.username || '-'
+                )}
+              </Descriptions.Item>
               <Descriptions.Item label="地址" span={2}>
                 {order.address || '-'}
               </Descriptions.Item>
               <Descriptions.Item label="备注" span={2}>
-                {order.remark || '-'}
+                {order.remark ? (
+                  <div
+                    className="rich-remark"
+                    dangerouslySetInnerHTML={{ __html: remarkHtml(order.remark) }}
+                  />
+                ) : (
+                  '-'
+                )}
               </Descriptions.Item>
             </Descriptions>
           </Card>
@@ -290,18 +362,42 @@ export default function OrderDetail() {
                 {itemsCustomer.length === 0 && <span style={{ color: '#999' }}>无</span>}
                 {itemsCustomer.map((it) => (
                   <div key={it.id} style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>{it.name}</span>
+                    <span>
+                      {it.name}
+                      {it.spec ? `（${it.spec}）` : ''}
+                    </span>
                     <span style={{ color: '#999' }}>{itemQtyText(it)}</span>
                   </div>
                 ))}
               </Col>
               <Col span={12}>
-                <div style={{ fontWeight: 500, marginBottom: 8 }}>审核后生产</div>
+                <div style={{ fontWeight: 500, marginBottom: 8 }}>
+                  审核后生产
+                  {canReview && itemsFinal.length > 0 && (
+                    <span style={{ fontWeight: 400, fontSize: 12, color: '#999', marginLeft: 8 }}>
+                      取消勾选的项目工厂看不到
+                    </span>
+                  )}
+                </div>
                 {itemsFinal.length === 0 && <span style={{ color: '#999' }}>未审核</span>}
                 {itemsFinal.map((it) => (
-                  <div key={it.id} style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>{it.name}</span>
-                    <span style={{ color: '#999' }}>{itemQtyText(it)}</span>
+                  <div key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ flex: 1 }}>
+                      {it.name}
+                      {it.spec ? `（${it.spec}）` : ''}
+                    </span>
+                    {canReview && (
+                      <Checkbox
+                        checked={it.factory_visible !== false}
+                        disabled={savingVisible === it.id}
+                        onChange={(e) => toggleFactoryVisible(it, e.target.checked)}
+                      >
+                        <span style={{ fontSize: 12, color: it.factory_visible === false ? '#bbb' : '#999' }}>
+                          给工厂看
+                        </span>
+                      </Checkbox>
+                    )}
+                    <span style={{ color: '#999', width: 40, textAlign: 'right' }}>{itemQtyText(it)}</span>
                   </div>
                 ))}
               </Col>
@@ -322,13 +418,20 @@ export default function OrderDetail() {
                   title={
                     <Space>
                       <Tag color="blue">{p.expand?.version?.name || '价格版本'}</Tag>
+                      {/* 价格行本身就归这单的代理/工厂，看版本标识就知道是谁的价 */}
+                      {p.expand?.version?.code === 'agent' && order.agent && (
+                        <Tag color="geekblue">本单代理成本</Tag>
+                      )}
+                      {p.expand?.version?.code === 'factory' && (
+                        <Tag color="purple">本单工厂成本</Tag>
+                      )}
                       {p.price_mode === 'fixed' && <Tag color="orange">固定价</Tag>}
                     </Space>
                   }
                   extra={
                     canReview ? (
                       <Button size="small" icon={<EditOutlined />} onClick={() => openAdjust(p)}>
-                        调价
+                        加价
                       </Button>
                     ) : null
                   }
@@ -360,6 +463,17 @@ export default function OrderDetail() {
                     </span>
                     <span className="price-total">¥{yuan(p.total_cents)}</span>
                   </div>
+                  {/* 每一笔加价都带备注，事后能看懂价格是怎么来的 */}
+                  {adjustments
+                    .filter((a) => a.version === p.version)
+                    .map((a) => (
+                      <div key={a.id} style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
+                        {a.amount_cents > 0 ? '+' : ''}¥{yuan(a.amount_cents)} · {a.reason || '无备注'}
+                        <span style={{ color: '#bbb', marginLeft: 6 }}>
+                          {dayjs(a.created).format('MM-DD HH:mm')}
+                        </span>
+                      </div>
+                    ))}
                 </Card>
               )
             })}
@@ -398,33 +512,37 @@ export default function OrderDetail() {
           category: it.category,
           unit: it.unit,
           qty_mode: it.qty_mode,
+          spec: it.spec,
         }))}
         onClose={() => setReviewOpen(false)}
         onDone={load}
       />
 
-      <Modal title="调整价格" open={adjustOpen} onCancel={() => setAdjustOpen(false)} onOk={submitAdjust} okText="保存">
+      <Modal
+        title={`加价 · ${adjustTarget?.expand?.version?.name || '价格版本'}`}
+        open={adjustOpen}
+        onCancel={() => setAdjustOpen(false)}
+        onOk={submitAdjust}
+        okText="保存"
+      >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
-          <Form.Item label="计价方式" name="price_mode">
-            <Radio.Group>
-              <Radio.Button value="formula">按项目累加</Radio.Button>
-              <Radio.Button value="fixed">固定价</Radio.Button>
-            </Radio.Group>
+          <div style={{ marginBottom: 12, fontSize: 13, color: '#888' }}>
+            底价由账号上配的项目价自动计算，这里只能加价（负数表示减价），
+            并写清原因。当前 ¥{yuan(adjustTarget?.total_cents || 0)}
+          </div>
+          <Form.Item
+            label="本次加价（元）"
+            name="amount"
+            rules={[{ required: true, message: '请填写加价金额' }]}
+          >
+            <InputNumber precision={2} style={{ width: '100%' }} placeholder="如 60" />
           </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.price_mode !== cur.price_mode}>
-            {({ getFieldValue }) =>
-              getFieldValue('price_mode') === 'fixed' ? (
-                <Form.Item label="固定价（元）" name="fixed">
-                  <InputNumber min={0} precision={2} style={{ width: '100%' }} />
-                </Form.Item>
-              ) : null
-            }
-          </Form.Item>
-          <Form.Item label="本次加价（元，可填负数）" name="amount">
-            <InputNumber precision={2} style={{ width: '100%' }} placeholder="0" />
-          </Form.Item>
-          <Form.Item label="原因" name="reason">
-            <Input.TextArea rows={2} />
+          <Form.Item
+            label="加价备注"
+            name="reason"
+            rules={[{ required: true, message: '请写清加价原因' }]}
+          >
+            <Input.TextArea rows={2} placeholder="如：这个颜色特殊" />
           </Form.Item>
         </Form>
       </Modal>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   App,
   AutoComplete,
@@ -19,8 +19,8 @@ import {
   Upload,
   type TableProps,
 } from 'antd'
-import { PlusOutlined, SaveOutlined, UploadOutlined } from '@ant-design/icons'
-import { pb, yuan, toCents, type Item, type PriceVersion } from '../pb'
+import { PlusOutlined, UploadOutlined } from '@ant-design/icons'
+import { pb, type Item } from '../pb'
 import { useAuth } from '../auth'
 
 const CATEGORY: Record<string, { text: string; color: string }> = {
@@ -31,25 +31,14 @@ const CATEGORY: Record<string, { text: string; color: string }> = {
 
 const UNIT_OPTIONS = ['对', '双', '个', '套', '件'].map((v) => ({ value: v }))
 
+/** 定制项目字典：只维护项目本身（名称/分类/类型/单位/规格/效果图/排序/启用） */
 export default function ItemList() {
   const { message } = App.useApp()
   const { user } = useAuth()
-  // 项目配置只给审核/管理员；代理只能维护自己版本的价格
-  const canConfig = ['admin', 'reviewer'].includes((user as any)?.role_code || '')
-  // 价格版本的可见范围：超级管理员看全部，其他人只看自己绑定的版本
-  const canViewAllPrices = !!user?.can_view_all_prices
-  const myPriceVersion = user?.price_version || ''
-  const canEditVersion = (ver: PriceVersion) => canViewAllPrices || (!!myPriceVersion && myPriceVersion === ver.id)
-  const isAdmin = (user as any)?.role_code === 'admin'
-  // 代理价由内部定，代理只能看不能改
-  const readonlyPrice = (user as any)?.role_code === 'agent'
-  const [verOpen, setVerOpen] = useState(false)
-  const [verName, setVerName] = useState('')
+  const roleCode = (user as any)?.role_code || ''
+  const canConfig = ['admin', 'reviewer'].includes(roleCode)
+
   const [items, setItems] = useState<Item[]>([])
-  const [versions, setVersions] = useState<PriceVersion[]>([])
-  const [priceMap, setPriceMap] = useState<Record<string, number>>({})
-  // undefined 表示该版本这条价格还没录入（区别于明确的 0 元）
-  const [draft, setDraft] = useState<Record<string, number | undefined>>({})
   const [loading, setLoading] = useState(false)
   const [editing, setEditing] = useState<Item | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
@@ -64,11 +53,7 @@ export default function ItemList() {
   const load = async () => {
     setLoading(true)
     try {
-      const [vs, ps, token] = await Promise.all([
-        pb.collection('price_versions').getFullList<PriceVersion>({ sort: 'sort' }),
-        pb.collection('item_prices').getFullList({}),
-        pb.files.getToken().catch(() => ''),
-      ])
+      const token = await pb.files.getToken().catch(() => '')
       setFileToken(token)
       // 服务端还没跑 is_deleted 迁移时退化成全量，避免整页报错
       let its: Item[] = []
@@ -77,14 +62,7 @@ export default function ItemList() {
       } catch (e) {
         its = await pb.collection('items').getFullList<Item>({ sort: 'sort' })
       }
-      const map: Record<string, number> = {}
-      ps.forEach((p: any) => {
-        map[`${p.item}|${p.version}`] = p.price_cents || 0
-      })
       setItems(its)
-      setVersions(vs)
-      setPriceMap(map)
-      setDraft({ ...map })
     } catch (e: any) {
       message.error(e?.message || '加载失败')
     } finally {
@@ -96,40 +74,6 @@ export default function ItemList() {
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // 待保存的格子：只统计有权限的版本，空着（未定价）不提交
-  const dirtyKeys = useMemo(() => {
-    const keys: string[] = []
-    for (const ver of versions) {
-      if (!(canViewAllPrices || (myPriceVersion && myPriceVersion === ver.id))) continue
-      for (const it of items) {
-        const k = `${it.id}|${ver.id}`
-        const cents = draft[k]
-        if (cents === undefined) continue
-        if (cents !== priceMap[k]) keys.push(k)
-      }
-    }
-    return keys
-  }, [draft, priceMap, versions, items, canViewAllPrices, myPriceVersion])
-
-  const savePrices = async () => {
-    try {
-      for (const key of dirtyKeys) {
-        const [item, version] = key.split('|')
-        const cents = draft[key]
-        if (cents === undefined) continue
-        // 服务端是 upsert：没有记录就新建，所以代理版/工厂版第一次录入也走这里
-        await pb.send('/api/gg/item-prices', {
-          method: 'POST',
-          body: { item, version, price_cents: cents },
-        })
-      }
-      message.success(`已保存 ${dirtyKeys.length} 项价格`)
-      load()
-    } catch (e: any) {
-      message.error(e?.message || '保存失败')
-    }
-  }
 
   const fileUrl = (it: Item, thumb?: string) => {
     if (!it.image) return ''
@@ -166,12 +110,20 @@ export default function ItemList() {
       ...v,
       qty_mode: v.category === 'base' ? 'check' : v.qty_mode || 'check',
       unit: '',
+      // 规格存成字符串数组，空数组表示这个项目没有规格
+      options: Array.isArray(v.options) ? v.options : [],
     } as any
     if (payload.qty_mode === 'qty') payload.unit = v.unit || ''
     try {
       const rec: any = editing
         ? await pb.collection('items').update(editing.id, payload)
-        : await pb.collection('items').create(payload)
+        : await pb.collection('items').create({
+            ...payload,
+            // bool 字段没默认值，新建项目显式给一次，否则 H5 上会直接看不到
+            h5_visible: true,
+            h5_default: payload.category === 'base',
+            in_price: true,
+          })
       // 图片单独走一次 FormData：先保存字段，再换图/删图，避免和字段校验混在一起
       if (imgFile) {
         const fd = new FormData()
@@ -185,28 +137,6 @@ export default function ItemList() {
       load()
     } catch (e: any) {
       message.error(e?.message || '保存失败')
-    }
-  }
-
-  // 一个代理一个价格版本：新建后在表格里给这一列录价，再去「后台账号」绑给代理
-  const addVersion = async () => {
-    const name = verName.trim()
-    if (!name) {
-      message.warning('请填写名称')
-      return
-    }
-    try {
-      await pb.collection('price_versions').create({
-        name,
-        code: `pv_${Date.now()}`,
-        sort: versions.reduce((m, v) => Math.max(m, v.sort || 0), 0) + 10,
-        is_active: true,
-      })
-      setVerOpen(false)
-      message.success('已创建')
-      load()
-    } catch (e: any) {
-      message.error(e?.message || '创建失败')
     }
   }
 
@@ -231,7 +161,7 @@ export default function ItemList() {
     {
       title: '效果图',
       dataIndex: 'image',
-      width: 80,
+      width: 90,
       align: 'center',
       render: (v: string, r: Item) =>
         v ? (
@@ -249,7 +179,7 @@ export default function ItemList() {
     {
       title: '分类',
       dataIndex: 'category',
-      width: 90,
+      width: 100,
       render: (v: string) => <Tag color={CATEGORY[v]?.color}>{CATEGORY[v]?.text || v}</Tag>,
     },
     {
@@ -264,53 +194,31 @@ export default function ItemList() {
     {
       title: '单位',
       dataIndex: 'unit',
-      width: 70,
+      width: 80,
       align: 'center',
       render: (v: string, r: Item) => (r.qty_mode === 'qty' ? v || '-' : '-'),
     },
-    ...versions.map((ver) => ({
-      title: ver.name,
-      width: 130,
-      align: 'right' as const,
-      render: (_v: any, r: Item) => {
-        const key = `${r.id}|${ver.id}`
-        // 只有「没权限」才显示不可见；有权限但没录入过，给个空格子直接填
-        if (!canEditVersion(ver)) {
-          return <span style={{ color: '#ccc' }}>不可见</span>
-        }
-        const cents = draft[key]
-        if (readonlyPrice) {
-          return cents !== undefined ? (
-            <span>¥{yuan(cents)}</span>
-          ) : (
-            <span style={{ color: '#ccc' }}>未定价</span>
-          )
-        }
-        return (
-          <InputNumber
-            size="small"
-            min={0}
-            precision={2}
-            style={{ width: 110 }}
-            placeholder="未定价"
-            value={cents !== undefined ? cents / 100 : undefined}
-            onChange={(nv) =>
-              setDraft({ ...draft, [key]: nv === null || nv === undefined ? undefined : toCents(nv) })
-            }
-          />
-        )
-      },
-    })),
+    {
+      title: '规格',
+      dataIndex: 'options',
+      width: 180,
+      render: (v: string[]) =>
+        v && v.length ? (
+          v.map((o) => <Tag key={o}>{o}</Tag>)
+        ) : (
+          <span style={{ color: '#ccc' }}>-</span>
+        ),
+    },
     {
       title: '排序',
       dataIndex: 'sort',
-      width: 70,
+      width: 80,
       align: 'center',
     },
     {
       title: '启用',
       dataIndex: 'is_active',
-      width: 70,
+      width: 80,
       align: 'center',
       render: (v: boolean) => (v ? <Tag color="success">是</Tag> : <Tag>否</Tag>),
     },
@@ -342,34 +250,11 @@ export default function ItemList() {
       className="page-card"
       title="定制项目"
       extra={
-        <Space>
-          {!readonlyPrice && (
-            <Button
-              type="primary"
-              icon={<SaveOutlined />}
-              disabled={dirtyKeys.length === 0}
-              onClick={savePrices}
-            >
-              保存价格修改 ({dirtyKeys.length})
-            </Button>
-          )}
-          {canConfig && (
-            <Button icon={<PlusOutlined />} onClick={() => openEdit(null)}>
-              新增项目
-            </Button>
-          )}
-          {isAdmin && (
-            <Button
-              icon={<PlusOutlined />}
-              onClick={() => {
-                setVerName('')
-                setVerOpen(true)
-              }}
-            >
-              新增价格版本
-            </Button>
-          )}
-        </Space>
+        canConfig ? (
+          <Button icon={<PlusOutlined />} onClick={() => openEdit(null)}>
+            新增项目
+          </Button>
+        ) : null
       }
     >
       <Table<Item>
@@ -382,29 +267,10 @@ export default function ItemList() {
         scroll={{ x: 'max-content' }}
       />
       <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
-        「不可见」表示你的账号没有该价格版本的权限，无法查看和修改；
-        「未定价」的空格子表示该版本还没录过价，直接填写后保存即创建记录。
-        勾选型客户只能选中/取消；数量型的类型与单位改动只对之后的新订单生效，历史订单按各自快照保留。
+        这里只是项目字典：名称、分类、类型、单位、规格、效果图、排序、启用。
+        H5 上是否显示 / 默认选中 / 是否计价、别名和价格都在「总部店铺」里配，代理在「我的店铺」里配自己那份，
+        没配的项目跟随总部。
       </div>
-
-      <Modal
-        title="新增价格版本"
-        open={verOpen}
-        onCancel={() => setVerOpen(false)}
-        onOk={addVersion}
-        okText="创建"
-      >
-        <Input
-          style={{ marginTop: 16 }}
-          value={verName}
-          onChange={(e) => setVerName(e.target.value)}
-          onPressEnter={addVersion}
-          placeholder="如：代理版-张三"
-        />
-        <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
-          创建后给这一列录价，再到「后台账号」把该代理的价格版本选成它。
-        </div>
-      </Modal>
 
       <Modal
         title={editing ? '编辑项目' : '新增项目'}
@@ -428,7 +294,7 @@ export default function ItemList() {
           </Form.Item>
           <Form.Item
             label="效果图"
-            extra="JPG / PNG / WebP，5MB 以内，建议正方形。保存后客户在下单页点缩略图即可查看大图。"
+            extra="JPG / PNG / WebP，5MB 以内，建议正方形。这是默认图，代理可以在自己的店铺里换。"
           >
             <Space align="start" size={16}>
               {imgPreview || (editing?.image && !imgRemoved) ? (
@@ -502,6 +368,13 @@ export default function ItemList() {
                 </>
               )
             }
+          </Form.Item>
+          <Form.Item
+            label="规格选项"
+            name="options"
+            extra="客户下单时必须选一个，如 分体 / 连体。留空表示没有规格；价格仍按项目整体算，规格之间不单独定价。"
+          >
+            <Select mode="tags" tokenSeparators={[',', '，']} placeholder="输入后回车添加" options={[]} />
           </Form.Item>
           <Form.Item label="排序" name="sort">
             <InputNumber min={0} style={{ width: '100%' }} />

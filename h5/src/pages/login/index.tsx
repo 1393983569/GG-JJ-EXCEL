@@ -1,17 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { View, Input, Text } from '@tarojs/components'
 import Taro from '@tarojs/taro'
-import { pb } from '../../api/pb'
-
-// 服务端返回的字段级错误用字段 key 做前缀，客户看不懂，这里换成中文
-const FIELD_LABELS: Record<string, string> = {
-  username: '手机号',
-  email: '邮箱',
-  phone: '手机号',
-  password: '密码',
-  passwordConfirm: '确认密码',
-  display_name: '称呼',
-}
+import { pb, errorText } from '../../api/pb'
+import { rememberAgent, withAgent } from '../../api/agent'
 
 export default function Login() {
   const [mode, setMode] = useState<'login' | 'register'>('login')
@@ -19,6 +10,11 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
   const [loading, setLoading] = useState(false)
+
+  // 落地页可能直接就是登录页（链接改了、刷新、或从首页带过来），在这里再抓一次
+  useEffect(() => {
+    rememberAgent()
+  }, [])
 
   const submit = async () => {
     if (!/^1\d{10}$/.test(phone)) {
@@ -47,23 +43,17 @@ export default function Login() {
       Taro.showToast({ title: mode === 'register' ? '注册成功' : '登录成功', icon: 'success' })
       setTimeout(() => {
         const pages = Taro.getCurrentPages()
+        // 回退时地址栏会回到上一页，代理标识靠 storage 兜底；
+        // 直接重定向则把标识带回去，刷新也不会丢
         if (pages.length > 1) Taro.navigateBack()
-        else Taro.redirectTo({ url: '/pages/index/index' })
+        else Taro.redirectTo({ url: withAgent('/pages/index/index') })
       }, 600)
     } catch (e: any) {
-      // PocketBase 的字段级错误在 response.data 里，展开给用户看
-      let msg = e?.message || '操作失败'
-      const data = e?.response?.data || e?.data
-      if (data && typeof data === 'object') {
-        const first = Object.keys(data)[0]
-        if (first && data[first] && data[first].message) {
-          msg = (FIELD_LABELS[first] || first) + ': ' + data[first].message
-        }
-      }
-      if (String(msg).indexOf('Failed to create record') >= 0) {
-        msg = '注册失败：' + JSON.stringify(data || {})
-      }
-      Taro.showToast({ title: msg, icon: 'none', duration: 4000 })
+      Taro.showToast({
+        title: errorText(e, mode === 'register' ? '注册失败' : '登录失败'),
+        icon: 'none',
+        duration: 4000,
+      })
       console.error('[register/login]', e)
     } finally {
       setLoading(false)

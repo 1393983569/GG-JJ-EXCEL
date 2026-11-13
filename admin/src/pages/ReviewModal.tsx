@@ -16,6 +16,8 @@ type Props = {
     category: string
     unit?: string
     qty_mode?: string
+    /** 客户选中的规格，如 分体 / 连体 */
+    spec?: string
   }[]
   /** review=审核员；agent=代理核对，只能改尺寸/项目/成交价 */
   mode?: 'review' | 'agent'
@@ -333,6 +335,7 @@ export default function ReviewModal({
                         }}
                       >
                         {it.name}
+                        {it.spec ? `（${it.spec}）` : ''}
                       </Checkbox>
                       {it.category === 'base' && <Tag color="red">基础</Tag>}
                       {it.category !== 'base' && mode === 'qty' && (

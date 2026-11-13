@@ -7,6 +7,7 @@ import OrderList from './pages/OrderList'
 import OrderDetail from './pages/OrderDetail'
 import MeasurementList from './pages/MeasurementList'
 import ItemList from './pages/ItemList'
+import ShopSettings from './pages/ShopSettings'
 import MeasureFieldList from './pages/MeasureFieldList'
 import RoleList from './pages/RoleList'
 import UserList from './pages/UserList'
@@ -40,7 +41,14 @@ export default function App() {
         <Route path="/orders" element={<OrderList />} />
         <Route path="/orders/:id" element={<OrderDetail />} />
         <Route path="/measurements" element={<MeasurementList />} />
-        <Route path="/items" element={<ItemList />} />
+        {/* 字典只给内部；代理的项目配置在「我的店铺」 */}
+        <Route
+          path="/items"
+          element={
+            isAdmin || (user as any)?.role_code === 'reviewer' ? <ItemList /> : <Navigate to="/shop" replace />
+          }
+        />
+        <Route path="/shop" element={<ShopSettings />} />
         <Route path="/measure-fields" element={<MeasureFieldList />} />
         <Route path="/roles" element={isAdmin ? <RoleList /> : <Navigate to="/orders" replace />} />
         <Route path="/users" element={isAdmin ? <UserList /> : <Navigate to="/orders" replace />} />

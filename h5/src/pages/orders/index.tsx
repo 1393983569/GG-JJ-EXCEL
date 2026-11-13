@@ -121,12 +121,21 @@ export default function MyOrders() {
         <View className="empty">加载中…</View>
       )}
 
-      <View
-        className="btn-ghost"
-        style={{ marginTop: 8 }}
-        onClick={() => Taro.navigateTo({ url: '/pages/order/index' })}
-      >
-        再下一单
+      <View className="row" style={{ marginTop: 8, gap: 16 }}>
+        <View
+          className="btn-ghost"
+          style={{ flex: 1 }}
+          onClick={() => Taro.navigateTo({ url: '/pages/order/index' })}
+        >
+          再下一单
+        </View>
+        <View
+          className="btn-ghost"
+          style={{ flex: 1 }}
+          onClick={() => Taro.reLaunch({ url: '/pages/index/index' })}
+        >
+          返回首页
+        </View>
       </View>
     </View>
   )

@@ -11,10 +11,21 @@ export type Staff = {
   display_name?: string
   phone?: string
   role?: string
+  /** 角色标识冗余字段，权限规则判断的就是它：admin / reviewer / agent / factory */
+  role_code?: string
   price_version?: string
   can_view_all_prices?: boolean
   menus?: string[]
   is_active?: boolean
+}
+
+/** 账号维度的项目价：工厂/代理的成本，或代理给自己客户定的价 */
+export type StaffItemPrice = {
+  id: string
+  staff: string
+  item: string
+  version: string
+  price_cents?: number
 }
 
 export type OrderPrice = {
@@ -28,6 +39,8 @@ export type OrderPrice = {
   adjust_cents: number
   total_cents: number
   detail_json?: PriceLine[]
+  /** 列表里 expand=version 带出的价格版本 */
+  expand?: { version?: PriceVersion }
 }
 
 export type PriceLine = {
@@ -50,6 +63,8 @@ export type Order = {
   order_no: string
   customer?: string
   agent?: string
+  /** 审核指派的工厂账号 */
+  factory?: string
   measurement?: string
   contact_name?: string
   phone?: string
@@ -60,6 +75,11 @@ export type Order = {
   reviewed_at?: string
   remark?: string
   created: string
+  /** 展开字段：列表里显示代理/工厂名称用 expand=agent,factory */
+  expand?: {
+    agent?: { id: string; display_name?: string; username?: string }
+    factory?: { id: string; display_name?: string; username?: string }
+  }
 }
 
 export type Measurement = {
@@ -84,6 +104,16 @@ export type Item = {
   qty_mode?: 'check' | 'qty'
   /** 数量型单位：对 / 双 / 个 */
   unit?: string
+  /** 规格选项，如 ["分体","连体"]；非空时客户下单必须选一个 */
+  options?: string[]
+  /** 下单页（H5）是否显示 */
+  h5_visible?: boolean
+  /** 下单页默认勾选 */
+  h5_default?: boolean
+  /** 是否计入价格：false 时客户版价格按 0 算，项目照常下单 */
+  in_price?: boolean
+  /** H5 展示名：没有代理归属的直客看到的名字，留空就显示项目名 */
+  alias?: string
   /** 假删除标记：置 true 后不再出现在项目列表，历史订单保留 */
   is_deleted?: boolean
   remark?: string
@@ -159,4 +189,13 @@ export function toCents(value: number | string | null | undefined): number {
   const n = Number(value)
   if (!isFinite(n)) return 0
   return Math.round(n * 100)
+}
+
+/**
+ * 备注：新数据是服务端白名单过滤过的富文本 HTML，老数据是纯文本。
+ * 按内容判断，纯文本转义后再当 HTML 渲染，避免历史数据里的 < 被吃掉。
+ */
+export function remarkHtml(s?: string): string {
+  if (!s) return ''
+  return /<[a-z][\s\S]*>/i.test(s) ? s : s.replace(/</g, '&lt;').replace(/\n/g, '<br>')
 }

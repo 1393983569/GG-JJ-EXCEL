@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { View, Text, Input, Image } from '@tarojs/components'
 import Taro, { useRouter } from '@tarojs/taro'
-import { pb, yuan, type Item, type ItemPrice, type Measurement } from '../../api/pb'
+import { pb, yuan, type Item, type Measurement } from '../../api/pb'
+import { rememberAgent, clearAgentCode } from '../../api/agent'
+import RemarkEditor from '../../components/RemarkEditor'
 
 const CATEGORY_ORDER: Record<string, number> = { base: 0, main: 1, extra: 2 }
 const CATEGORY_NAME: Record<string, string> = { base: '基础', main: '主要定制项', extra: '补充项' }
@@ -14,15 +16,16 @@ export default function Order() {
   const [items, setItems] = useState<Item[]>([])
   const [priceMap, setPriceMap] = useState<Record<string, number>>({})
   const [qty, setQty] = useState<Record<string, number>>({})
+  // 项目规格：手套 → 分体/连体，后台配什么这里显示什么
+  const [specs, setSpecs] = useState<Record<string, string>>({})
   // items 不是公开集合，效果图要带 file token 才能访问
   const [fileToken, setFileToken] = useState('')
   const [address, setAddress] = useState('')
   const [contact, setContact] = useState('')
   const [phone, setPhone] = useState('')
   const [remark, setRemark] = useState('')
-  // 代理专属链接带来的归属；意向售价客户可填可不填
+  // 代理专属链接带来的归属
   const [agentCode, setAgentCode] = useState('')
-  const [intended, setIntended] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [ready, setReady] = useState(false)
 
@@ -35,15 +38,15 @@ export default function Order() {
     }
     setPhone(user.phone || user.username || '')
     setContact(user.display_name || '')
-    // 与 app.tsx 里 useLaunch 写入的 key 保持一致
-    const code = String(Taro.getStorageSync('agent_code') || '')
+    // 地址栏、路由参数、本地缓存里任意一个还在，就不会把单子变成无代理
+    const code = rememberAgent()
     setAgentCode(code)
     // 链接被改过就当场提示，别等填完一整张单再报错
     if (code) {
-      pb.send(`/api/gg/agent/check?code=${encodeURIComponent(code)}`)
+      pb.send(`/api/gg/agent/check?code=${encodeURIComponent(code)}`, {})
         .then((r: any) => {
           if (r?.ok) return
-          Taro.removeStorageSync('agent_code')
+          clearAgentCode()
           setAgentCode('')
           Taro.showModal({
             title: '专属链接无效',
@@ -58,13 +61,14 @@ export default function Order() {
 
   const load = async (uid: string) => {
     try {
-      const [ms, its, ps, token] = await Promise.all([
+      const [ms, its, priceRes, token] = await Promise.all([
         pb.collection('measurements').getFullList<Measurement>({
           filter: `customer = "${uid}"`,
           sort: '-updated',
         }),
         pb.collection('items').getFullList<Item>({ filter: 'is_active = true', sort: 'sort' }),
-        pb.collection('item_prices').getFullList<ItemPrice>({}),
+        // 价格由服务端定：客户所属代理的自定价 > 全局客户价，前端不再自己拼
+        pb.send(`/api/gg/items/prices?agent=${encodeURIComponent(rememberAgent())}`, {}),
         pb.files.getToken().catch(() => ''),
       ])
       setMeasurements(ms)
@@ -73,17 +77,33 @@ export default function Order() {
       if (p) setMid(p)
       else if (ms.length) setMid(ms[0].id)
 
-      setItems(its)
-      const map: Record<string, number> = {}
-      ps.forEach((x) => {
-        map[x.item] = x.price_cents || 0
-      })
-      setPriceMap(map)
+      const res: any = priceRes || {}
+      setPriceMap(res.prices || {})
 
-      // 基础价固定累加，默认选中；其余项目默认不选
+      // 服务端已经算好这个客户该看到的值：代理设置 > 总部设置 > 项目原名
+      const conf: Record<string, any> = res.items || {}
+      const merged = its
+        .map((it) => {
+          const c = conf[it.id] || {}
+          return {
+            ...it,
+            name: c.name || it.name,
+            sort: c.sort !== undefined ? c.sort : it.sort,
+            h5_visible: c.h5_visible !== undefined ? c.h5_visible : it.h5_visible !== false,
+            h5_default: c.h5_default !== undefined ? c.h5_default : !!it.h5_default,
+            in_price: c.in_price !== undefined ? c.in_price : it.in_price !== false,
+            // 代理换过效果图时，服务端直接给带 token 的地址
+            icon: c.icon || '',
+          }
+        })
+        .filter((it) => it.h5_visible !== false)
+        .sort((a, b) => (a.sort || 0) - (b.sort || 0))
+      setItems(merged)
+
+      // 默认勾选按项目配置走；基础价始终算 1 份，否则基础价就没了
       const init: Record<string, number> = {}
-      its.forEach((it) => {
-        init[it.id] = it.category === 'base' ? 1 : 0
+      merged.forEach((it) => {
+        init[it.id] = it.category === 'base' || it.h5_default ? 1 : 0
       })
       setQty(init)
       setReady(true)
@@ -94,8 +114,16 @@ export default function Order() {
   }
 
   const total = useMemo(() => {
-    return Object.keys(qty).reduce((sum, id) => sum + (priceMap[id] || 0) * (qty[id] || 0), 0)
-  }, [qty, priceMap])
+    // 不计入合计的项目照样下单，只是不参与这里的累加（服务端客户版价格同样按 0 算）
+    const free: Record<string, boolean> = {}
+    items.forEach((it) => {
+      if (it.in_price === false) free[it.id] = true
+    })
+    return Object.keys(qty).reduce(
+      (sum, id) => (free[id] ? sum : sum + (priceMap[id] || 0) * (qty[id] || 0)),
+      0
+    )
+  }, [qty, priceMap, items])
 
   const grouped = useMemo(() => {
     const map: Record<string, Item[]> = {}
@@ -126,6 +154,8 @@ export default function Order() {
   }
 
   const imgUrl = (it: Item, thumb?: string) => {
+    // 代理自定义图：服务端已经拼好带文件 token 的地址
+    if (it.icon) return it.icon
     if (!it.image) return ''
     return pb.files.getURL(it, it.image, {
       ...(thumb ? { thumb } : {}),
@@ -147,20 +177,24 @@ export default function Order() {
     if (!address.trim()) return Taro.showToast({ title: '请填写收货地址', icon: 'none' })
 
     // 按项目顺序提交：类型与单位由服务端按下单时的配置固化
-    const snapshot = items
-      .filter((it) => (qty[it.id] || 0) > 0)
-      .map((it) => {
-        const isQty = it.qty_mode === 'qty'
-        return {
-          item_id: it.id,
-          name: it.name,
-          category: it.category,
-          qty: Math.max(1, qty[it.id] || 1),
-          unit: isQty ? it.unit || '' : '',
-          qty_mode: isQty ? 'qty' : 'check',
-        }
-      })
-    if (!snapshot.length) return Taro.showToast({ title: '请至少选择一个项目', icon: 'none' })
+    const picked = items.filter((it) => (qty[it.id] || 0) > 0)
+    if (!picked.length) return Taro.showToast({ title: '请至少选择一个项目', icon: 'none' })
+    // 后台配了规格的项目必须先选一个（服务端也会校验）
+    const missing = picked.find((it) => it.options?.length && !specs[it.id])
+    if (missing) return Taro.showToast({ title: `请选择「${missing.name}」的规格`, icon: 'none' })
+
+    const snapshot = picked.map((it) => {
+      const isQty = it.qty_mode === 'qty'
+      return {
+        item_id: it.id,
+        name: it.name,
+        category: it.category,
+        qty: Math.max(1, qty[it.id] || 1),
+        unit: isQty ? it.unit || '' : '',
+        qty_mode: isQty ? 'qty' : 'check',
+        spec: specs[it.id] || '',
+      }
+    })
 
     setSubmitting(true)
     try {
@@ -175,8 +209,6 @@ export default function Order() {
           address: address.trim(),
           remark,
           agent: agentCode,
-          // 成交价下单时固化，之后改价目表不影响这张单
-          terminal_price_cents: intended ? Math.round(Number(intended) * 100) : 0,
         },
       })
       Taro.showToast({ title: '下单成功', icon: 'success' })
@@ -223,14 +255,6 @@ export default function Order() {
           value={address}
           onInput={(e) => setAddress(e.detail.value)}
           placeholder="省市区 + 详细地址"
-        />
-        <Text className="label">意向售价（元，可不填）</Text>
-        <Input
-          className="input"
-          type="digit"
-          value={intended}
-          onInput={(e) => setIntended(e.detail.value)}
-          placeholder="你希望这件衣服卖多少钱"
         />
         {agentCode ? <Text className="muted">本单由专属代理服务</Text> : null}
       </View>
@@ -285,6 +309,7 @@ export default function Order() {
                     <Text style={{ fontSize: 32, fontWeight: 600 }}>{it.name}</Text>
                     <View className="muted" style={{ marginTop: 6 }}>
                       {price === undefined ? '价格待定' : '¥' + yuan(price)}
+                      {it.in_price === false ? '（不计入合计）' : ''}
                     </View>
                   </View>
                   <Text className="tag">基础项</Text>
@@ -317,6 +342,7 @@ export default function Order() {
                         <View className="item-price">
                           {price === undefined ? '价格待定' : '¥' + yuan(price)}
                           {isQty && unit ? ' / ' + unit : ''}
+                          {it.in_price === false ? '（不计入合计）' : ''}
                         </View>
                       </View>
                     </View>
@@ -329,6 +355,27 @@ export default function Order() {
                           mode="aspectFill"
                         />
                         <Text className="item-thumb-tip">查看</Text>
+                      </View>
+                    ) : null}
+
+                    {it.options?.length ? (
+                      <View className="spec-row">
+                        {it.options.map((o) => (
+                          <View
+                            key={o}
+                            className={
+                              'spec-chip' + (specs[it.id] === o ? ' spec-chip-on' : '')
+                            }
+                            onClick={(e: any) => {
+                              e.stopPropagation()
+                              setSpecs((prev) => ({ ...prev, [it.id]: o }))
+                              // 选规格就等于选中这个项目，省一次点击
+                              setQty((prev) => (prev[it.id] > 0 ? prev : { ...prev, [it.id]: 1 }))
+                            }}
+                          >
+                            {o}
+                          </View>
+                        ))}
                       </View>
                     ) : null}
 
@@ -356,12 +403,7 @@ export default function Order() {
 
       <View className="card">
         <View className="card-title">备注</View>
-        <Input
-          className="input"
-          value={remark}
-          onInput={(e) => setRemark(e.detail.value)}
-          placeholder="可填写特殊要求"
-        />
+        <RemarkEditor value={remark} onChange={setRemark} />
       </View>
 
       <View className="footer-bar">

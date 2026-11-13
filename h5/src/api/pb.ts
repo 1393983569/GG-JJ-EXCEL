@@ -1,7 +1,36 @@
 import Taro from '@tarojs/taro'
 import PocketBase from 'pocketbase'
 
-export const PB_URL = process.env.TARO_APP_PB_URL || 'http://127.0.0.1:8090'
+function sameOrigin(): string {
+  try {
+    if (typeof location === 'undefined' || !/^https?:$/.test(location.protocol)) return ''
+    return location.origin
+  } catch (e) {
+    return ''
+  }
+}
+
+/**
+ * 后端地址解析，顺序：
+ * 1. .env 里的 TARO_APP_PB_URL；
+ * 2. 没配置（或配置成空）时走同源，适用于和 PocketBase 部署在同一域名的情况；
+ * 3. 最后退回本机 8090（仅 `npm run dev:h5` + `pocketbase serve` 的默认组合可用）。
+ *
+ * 手机通过局域网 IP 打开 H5 时，配置里的 127.0.0.1 指的是手机自己，
+ * 这里统一换成当前访问的主机名，避免请求发不出去。
+ */
+function resolveBase(): string {
+  const env = String(process.env.TARO_APP_PB_URL || '')
+    .trim()
+    .replace(/\/+$/, '')
+  if (!env) return sameOrigin() || 'http://127.0.0.1:8090'
+
+  const host = typeof location !== 'undefined' ? location.hostname : ''
+  if (!host || host === 'localhost' || host === '127.0.0.1') return env
+  return env.replace(/([a-z]+:\/\/)(127\.0\.0\.1|localhost)(?=[:/]|$)/, '$1' + host)
+}
+
+export const PB_URL = resolveBase()
 
 export const pb = new PocketBase(PB_URL)
 pb.autoCancellation(false)
@@ -54,8 +83,20 @@ export type Item = {
   qty_mode?: 'check' | 'qty'
   /** 数量型单位：对 / 双 / 个 */
   unit?: string
+  /** 规格选项，如 ["分体","连体"]；非空时客户必须选一个 */
+  options?: string[]
   /** 效果图文件名，访问需要 file token */
   image?: string
+  /** 下单页是否显示（代理可在 /api/gg/items/prices 的 overrides 里覆盖） */
+  h5_visible?: boolean
+  /** 下单页默认勾选 */
+  h5_default?: boolean
+  /** 是否计入合计：false 时照样下单，只是客户版价格按 0 算 */
+  in_price?: boolean
+  /** H5 展示名：总部配的别名，留空显示项目名 */
+  alias?: string
+  /** 代理自定义效果图的地址（服务端带文件 token 下发），有就用它替代 image */
+  icon?: string
   /** PocketBase 记录自带字段，拼文件 URL 时需要 */
   collectionId?: string
   collectionName?: string
@@ -86,6 +127,39 @@ export type Measurement = {
   data: Record<string, any>
   fabric?: string
   remark?: string
+}
+
+const FIELD_LABELS: Record<string, string> = {
+  username: '手机号',
+  phone: '手机号',
+  email: '邮箱',
+  password: '密码',
+  passwordConfirm: '确认密码',
+  display_name: '称呼',
+}
+
+/**
+ * 把报错转成能定位问题的中文。
+ * 请求根本没到后端（后端没起、地址配错、手机访问了 127.0.0.1）时，
+ * SDK 只会抛一句 "Something went wrong."，对客户和排查都没有意义。
+ */
+export function errorText(e: any, fallback = '操作失败'): string {
+  const status = typeof e?.status === 'number' ? e.status : 0
+  const data = e?.response?.data || e?.data
+  if (data && typeof data === 'object') {
+    const first = Object.keys(data)[0]
+    if (first && data[first] && data[first].message) {
+      return (FIELD_LABELS[first] || first) + '：' + data[first].message
+    }
+  }
+  // status 0：请求没拿到任何 HTTP 响应，联网层就失败了
+  if (!status) return '连不上后端 ' + PB_URL + '，请确认后端已启动、当前设备能访问该地址'
+
+  const msg = String(e?.message || '')
+  if (!msg || /something went wrong|failed to fetch|load failed/i.test(msg)) {
+    return fallback + '（HTTP ' + status + '）'
+  }
+  return msg
 }
 
 /** 分转元显示 */

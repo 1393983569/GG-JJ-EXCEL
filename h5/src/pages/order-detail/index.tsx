@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { View, Text } from '@tarojs/components'
+import { View, Text, RichText } from '@tarojs/components'
 import Taro, { useRouter } from '@tarojs/taro'
 import { pb, yuan } from '../../api/pb'
 
@@ -12,6 +12,9 @@ const STATUS: Record<string, { text: string; cls: string }> = {
   cancelled: { text: '已取消', cls: 'status-cancel' },
 }
 
+// 新备注是富文本 HTML，老数据是纯文本，按内容判断怎么渲染
+const remarkNodes = (s: string) => (/<[a-z][\s\S]*>/i.test(s) ? s : s.replace(/</g, '&lt;'))
+
 export default function OrderDetail() {
   const router = useRouter()
   const id = router.params.id || ''
@@ -19,6 +22,8 @@ export default function OrderDetail() {
   const [spec, setSpec] = useState<any>(null)
   const [items, setItems] = useState<any[]>([])
   const [price, setPrice] = useState<any>(null)
+  // 客户看到的项目名，和下单页保持一致（服务端算好的生效值）
+  const [names, setNames] = useState<Record<string, string>>({})
 
   useEffect(() => {
     if (id) load()
@@ -28,6 +33,16 @@ export default function OrderDetail() {
     try {
       const o = await pb.collection('orders').getOne<any>(id)
       setOrder(o)
+      pb.send('/api/gg/items/prices', {})
+        .then((r: any) => {
+          const conf: Record<string, any> = r?.items || {}
+          const map: Record<string, string> = {}
+          Object.keys(conf).forEach((id) => {
+            if (conf[id]?.name) map[id] = conf[id].name
+          })
+          setNames(map)
+        })
+        .catch(() => setNames({}))
 
       // 客户只能看到自己的原始尺寸
       try {
@@ -117,7 +132,7 @@ export default function OrderDetail() {
           return (
             <View className="row" key={i} style={{ padding: '10px 0' }}>
               <Text style={{ fontSize: 30 }}>
-                {it.name}
+                {names[it.item] || it.name}
                 {it.qty_mode === 'qty'
                   ? ' ' + (it.qty || 1) + (it.unit || '')
                   : it.qty > 1
@@ -144,8 +159,9 @@ export default function OrderDetail() {
           </View>
         ) : null}
         {order.remark ? (
-          <View className="muted" style={{ marginTop: 8 }}>
-            备注：{order.remark}
+          <View style={{ marginTop: 16 }}>
+            <Text className="muted">备注</Text>
+            <RichText className="rt-view" selectable nodes={remarkNodes(order.remark)} />
           </View>
         ) : null}
       </View>

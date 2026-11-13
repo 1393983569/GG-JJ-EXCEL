@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { View, Input, Picker, Text } from '@tarojs/components'
 import Taro, { useRouter } from '@tarojs/taro'
 import { pb, type MeasureField, type MeasureGroup, type Measurement } from '../../api/pb'
+import { withAgent } from '../../api/agent'
+import RemarkEditor from '../../components/RemarkEditor'
 
 export default function Measure() {
   const router = useRouter()
@@ -128,7 +130,7 @@ export default function Measure() {
       })
       Taro.showToast({ title: '保存成功', icon: 'success' })
       setTimeout(() => {
-        Taro.navigateTo({ url: `/pages/order/index?measurement=${rec.id}` })
+        Taro.navigateTo({ url: withAgent(`/pages/order/index?measurement=${rec.id}`) })
       }, 600)
     } catch (e: any) {
       Taro.showToast({ title: e?.message || '保存失败', icon: 'none' })
@@ -283,12 +285,7 @@ export default function Measure() {
 
       <View className="card">
         <View className="card-title">备注</View>
-        <Input
-          className="input"
-          value={remark}
-          placeholder="特殊要求可写在这里"
-          onInput={(e) => setRemark(e.detail.value)}
-        />
+        <RemarkEditor value={remark} onChange={setRemark} />
       </View>
 
       <View className="footer-bar">

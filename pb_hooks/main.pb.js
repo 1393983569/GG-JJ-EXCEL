@@ -25,6 +25,19 @@ onRecordCreateRequest((e) => {
   require(`${__hooks}/lib/core.js`).prepareCustomerCreate(e)
 }, "customers")
 
+// 备注是富文本 HTML，客户可以直接调接口写入，入库前按白名单过滤
+onRecordCreateRequest((e) => {
+  require(`${__hooks}/lib/remark.js`).sanitizeRemarkRecord(e)
+}, "measurements")
+
+onRecordUpdateRequest((e) => {
+  require(`${__hooks}/lib/remark.js`).sanitizeRemarkRecord(e)
+}, "measurements")
+
+onRecordUpdateRequest((e) => {
+  require(`${__hooks}/lib/remark.js`).sanitizeRemarkRecord(e)
+}, "orders")
+
 // 下单走自定义路由：服务端负责拆表（原始尺寸/项目）、算价、写日志
 routerAdd("POST", "/api/gg/orders", (c) => {
   return require(`${__hooks}/lib/core.js`).handleCreateOrder(c)
@@ -50,9 +63,24 @@ routerAdd("POST", "/api/gg/orders-adjust", (c) => {
   return require(`${__hooks}/lib/core.js`).handleAdjust(c)
 })
 
-// 项目单价维护（按价格版本隔离）
+// 项目单价维护（全局客户价 + 账号价）
 routerAdd("POST", "/api/gg/item-prices", (c) => {
   return require(`${__hooks}/lib/core.js`).handleUpsertPrice(c)
+})
+
+// 客户 H5 取价：按客户所属代理返回客户价，没有代理就用全局客户价
+routerAdd("GET", "/api/gg/items/prices", (c) => {
+  return require(`${__hooks}/lib/core.js`).handleItemPrices(c)
+})
+
+// 审核指派工厂：派单后才有工厂成本行
+routerAdd("POST", "/api/gg/orders-assign-factory", (c) => {
+  return require(`${__hooks}/lib/core.js`).handleAssignFactory(c)
+})
+
+// 生产项目逐个设置工厂可见（有些项目不需要给工厂看）
+routerAdd("POST", "/api/gg/orders-item-visibility", (c) => {
+  return require(`${__hooks}/lib/core.js`).handleItemVisibility(c)
 })
 
 // 手机号 + 订单号后四位查历史尺码

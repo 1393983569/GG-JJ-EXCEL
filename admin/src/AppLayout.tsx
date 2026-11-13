@@ -8,6 +8,7 @@ import {
   UserOutlined,
   LogoutOutlined,
   AppstoreOutlined,
+  ShopOutlined,
 } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from './auth'
@@ -21,6 +22,8 @@ const MENUS = [
   { key: '/orders', code: 'orders', label: '订单管理', icon: <ShoppingCartOutlined /> },
   { key: '/measurements', code: 'measurements', label: '量体档案', icon: <ProfileOutlined /> },
   { key: '/items', code: 'items', label: '定制项目', icon: <TagsOutlined /> },
+  // 代理看到的是「我的店铺」，内部看到的是「总部店铺」，同一个页面
+  { key: '/shop', code: 'shop', label: '我的店铺', icon: <ShopOutlined /> },
   { key: '/measure-fields', code: 'measure_fields', label: '量体字段', icon: <SettingOutlined /> },
   // 下面两个只给超级管理员，不受 menus 配置影响
   { key: '/roles', code: 'roles', label: '角色权限', icon: <TeamOutlined />, adminOnly: true },
@@ -39,7 +42,8 @@ export default function AppLayout() {
   const items = MENUS.filter((m) => (m.adminOnly ? isAdmin : hasMenu(m.code))).map((m) => ({
     key: m.key,
     icon: m.icon,
-    label: m.label,
+    // 同一个页面：代理是「我的店铺」，内部是「总部店铺」
+    label: m.code === 'shop' && !isAgent ? '总部店铺' : m.label,
   }))
 
   const selected = MENUS.find((m) => location.pathname.startsWith(m.key))?.key || '/orders'

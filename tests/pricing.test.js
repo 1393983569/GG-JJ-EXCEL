@@ -140,6 +140,9 @@ check("导出文本：勾选型只有项目名，数量型拼数量与单位", (
   assert.strictEqual(renderItemText("五指袜", 1, "", "check"), "五指袜")
   assert.strictEqual(renderItemText("手套", 2, "对", "qty"), "手套 2对")
   assert.strictEqual(renderItemText("手套", 2, "", "qty"), "手套 ×2")
+  // 带规格：手套（连体）2对
+  assert.strictEqual(renderItemText("手套", 2, "对", "qty", "连体"), "手套（连体） 2对")
+  assert.strictEqual(renderItemText("五指袜", 1, "", "check", "分体"), "五指袜（分体）")
 })
 
 check("金额格式化", () => {

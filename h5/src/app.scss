@@ -236,6 +236,29 @@ page {
   color: #1677ff;
 }
 
+/* 规格选择：同一项目下的不同做法（手套 分体/连体） */
+.spec-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.spec-chip {
+  padding: 6px 20px;
+  border-radius: 24px;
+  border: 1px solid #e5e5e5;
+  background: #fff;
+  color: #666;
+  font-size: 24px;
+}
+
+.spec-chip-on {
+  border-color: #1677ff;
+  background: #e6f0ff;
+  color: #1677ff;
+}
+
 .item-stepper {
   display: flex;
   align-items: center;
@@ -326,4 +349,94 @@ page {
   text-align: center;
   color: #999;
   font-size: 28px;
+}
+
+/* ---------------- 备注富文本（contenteditable 编辑 + 详情展示） ---------------- */
+.rt-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.rt-btn {
+  min-width: 64px;
+  height: 60px;
+  line-height: 60px;
+  padding: 0 16px;
+  text-align: center;
+  border-radius: 10px;
+  background: #f2f4f7;
+  color: #333;
+  font-size: 26px;
+  box-sizing: border-box;
+}
+
+.rt-btn-bold {
+  font-weight: 700;
+}
+
+.rt-swatch {
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  border: 1px solid #e5e5e5;
+  box-sizing: border-box;
+}
+
+/* 当前光标位置的格式，按钮高亮 */
+.rt-btn.rt-on {
+  background: #1677ff;
+  color: #fff;
+}
+
+.rt-swatch.rt-on {
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 2px #1677ff;
+}
+
+.rt-box {
+  position: relative;
+}
+
+/* 基准字号必须落在 16px（大写 PX 不参与 rem 转换）：
+   <font size> 是相对浏览器默认字号的档位，基准一旦偏移，
+   queryCommandValue('fontSize') 就会算出错误的档位（比如永远返回「小」）。 */
+.rt-input {
+  min-height: 150px;
+  background: #f7f8fa;
+  border-radius: 12px;
+  padding: 18px 22px;
+  font-size: 16PX;
+  line-height: 1.6;
+  color: #222;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.rt-ph {
+  position: absolute;
+  left: 22px;
+  top: 18px;
+  color: #999;
+  font-size: 16PX;
+  pointer-events: none;
+}
+
+/* 图片按容器宽度缩放，避免撑破页面 */
+.rt-input img,
+.rt-view img {
+  display: block;
+  max-width: 100%;
+  margin: 10px 0;
+}
+
+/* 展示端跟编辑端保持同一基准字号，否则 <font size> 的相对大小会失真 */
+.rt-view {
+  display: block;
+  font-size: 16PX;
+  line-height: 1.7;
+  color: #666;
+  user-select: text;
 }

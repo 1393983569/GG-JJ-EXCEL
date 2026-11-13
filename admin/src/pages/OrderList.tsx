@@ -57,6 +57,8 @@ export default function OrderList() {
       const res = await pb.collection('orders').getList<Order>(p, ps, {
         filter: parts.join(' && '),
         sort: '-created',
+        // 代理名称要展开才能拿到，没归属代理的订单 expand 为空
+        expand: 'agent',
       })
 
       // 只取我自己有权看到的版本价格（规则在服务端已过滤）
@@ -123,6 +125,12 @@ export default function OrderList() {
             <span>{v || '-'}</span>
           </Tooltip>
         ),
+      },
+      {
+        title: '代理名称',
+        dataIndex: 'agent',
+        width: 110,
+        render: (_v, r) => r.expand?.agent?.display_name || r.expand?.agent?.username || '-',
       },
       {
         title: '审核',
@@ -229,7 +237,7 @@ export default function OrderList() {
         loading={loading}
         columns={columns}
         dataSource={rows}
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1210 }}
         rowSelection={{
           selectedRowKeys: selected,
           onChange: (keys) => setSelected(keys as string[]),

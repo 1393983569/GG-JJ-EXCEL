@@ -135,7 +135,8 @@ PocketBase 启动后，进入 `http://127.0.0.1:8090/_/`，在 `staff` 集合里
 |---|---|---|
 | `order_specs_customer` | 客户原始尺寸 | 客户、代理、审核、管理员（**工厂不可见**） |
 | `order_specs_production` | 审核后生产尺寸 + 生产备注 | 工厂、审核、管理员（**客户/代理不可见**） |
-| `order_items` | 项目，`stage=customer/final` | 按 stage 与角色区分 |
+| `order_items` | 项目，`stage=customer/final` | 按 stage 与角色区分；`final` 可逐个设 `factory_visible=false`（工厂看不到） |
+| `staff_item_settings` | 账号维度的项目配置：别名、H5 三项开关、排序、效果图 | 内部全部；代理只看自己账号的行 |
 | `order_reviews` | 满意度打分 | 审核、代理、管理员（**客户/工厂不可见**） |
 | `order_logs` | 操作日志 | 审核、管理员 |
 | `order_prices` | 各版本价格 | 按 `price_version` 记录级隔离 |
@@ -151,6 +152,7 @@ POST /api/gg/orders            下单（客户 token）
 POST /api/gg/orders-review     审核通过/驳回（reviewer、admin）
 POST /api/gg/orders-score      满意度打分（reviewer、agent、admin）
 POST /api/gg/orders-adjust     调价 / 固定价（reviewer、admin）
+POST /api/gg/orders-item-visibility  生产项目设置工厂可见（reviewer、admin）
 POST /api/gg/item-prices       项目单价维护（按版本隔离）
 GET  /api/gg/measure/lookup    手机号 + 订单号后四位查历史尺码
 ```

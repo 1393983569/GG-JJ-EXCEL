@@ -3,6 +3,7 @@
 // 必须通过 require 引入本模块。
 const pricing = require(`${__hooks}/lib/pricing.js`)
 const measureText = require(`${__hooks}/lib/measure_text.js`)
+const remark = require(`${__hooks}/lib/remark.js`)
 
 // ---------------------------------------------------------------- 基础工具
 
@@ -183,6 +184,8 @@ function loadOrderItems(orderId, stage) {
       // 下单时快照的项目配置：后台之后改配置不影响这一单
       unit: r.getString("unit"),
       qty_mode: r.getString("qty_mode") || "check",
+      // 客户选中的规格（手套 分体/连体），没规格的项目为空
+      spec: r.getString("spec"),
       sort: r.getInt("sort"),
     })
   }
@@ -198,6 +201,7 @@ function itemConfig(itemId) {
       name: rec.getString("name"),
       qty_mode: rec.getString("qty_mode") === "qty" ? "qty" : "check",
       unit: rec.getString("unit") || "",
+      options: asJson(rec.get("options"), []),
     }
   } catch (e) {
     return null
@@ -217,6 +221,8 @@ function orderItemConfig(orderId) {
         name: it.name,
         qty_mode: it.qty_mode === "qty" ? "qty" : "check",
         unit: it.unit || "",
+        // 代理核对 / 审核改项目时不带规格，沿用客户当初选的
+        spec: it.spec || "",
       }
     }
   }
@@ -231,6 +237,13 @@ function normalizeOrderItem(raw, meta) {
   if (!isFinite(qty) || qty < 1) qty = 1
   if (mode === "check") qty = 1
   if (qty > 999) qty = 999
+
+  // 规格：客户端传的优先；代理核对 / 审核改项目时通常不带，沿用订单里已固化的
+  let spec = String(raw.spec || "").trim()
+  if (!spec) spec = String(cfg.spec || "").trim()
+  // cfg.options 是数组 = 按项目当前配置校验；没有这个 key 说明是订单快照，原样沿用
+  if (Array.isArray(cfg.options) && cfg.options.indexOf(spec) < 0) spec = ""
+
   return {
     item_id: String(raw.item_id || ""),
     name: String(cfg.name || raw.name || ""),
@@ -238,12 +251,28 @@ function normalizeOrderItem(raw, meta) {
     qty: qty,
     qty_mode: mode,
     unit: mode === "qty" ? String(cfg.unit || "") : "",
+    spec: spec,
   }
+}
+
+// 下单前的规格校验：配了规格的项目必须选一个，且必须是配置里的值
+function checkItemSpecs(rawItems) {
+  for (let i = 0; i < rawItems.length; i++) {
+    const cfg = itemConfig(rawItems[i].item_id || "")
+    if (!cfg) continue
+    const opts = Array.isArray(cfg.options) ? cfg.options : []
+    if (!opts.length) continue
+    const spec = String(rawItems[i].spec || "").trim()
+    if (!spec) return "请选择「" + cfg.name + "」的规格"
+    if (opts.indexOf(spec) < 0) return "「" + cfg.name + "」的规格无效，请重新选择"
+  }
+  return ""
 }
 
 // 写入 order_items（项目名 / 数量 / 单位 / 类型 都在这张表快照）
 // metaMap 优先用订单里已有的快照，新订单传 null 走项目当前配置
-function saveOrderItems(orderId, stage, rawItems, metaMap) {
+// visibleMap：重审时沿用上次的「工厂可见」，没记录的项目默认给工厂看
+function saveOrderItems(orderId, stage, rawItems, metaMap, visibleMap) {
   const itemCol = $app.findCollectionByNameOrId("order_items")
   const seen = {}
   let sort = 0
@@ -268,7 +297,9 @@ function saveOrderItems(orderId, stage, rawItems, metaMap) {
     rec.set("qty", it.qty)
     rec.set("unit", it.unit)
     rec.set("qty_mode", it.qty_mode)
+    rec.set("spec", it.spec)
     rec.set("sort", sort)
+    rec.set("factory_visible", !(visibleMap && visibleMap[itemId] === false))
     $app.save(rec)
   }
   return count
@@ -286,32 +317,111 @@ function findOrderPrice(orderId, versionId) {
   }
 }
 
+// 单价表：全局价 key = 项目|版本，账号价 key = 账号|项目|版本
 function buildUnitMap() {
-  const all = $app.findAllRecords("item_prices")
   const map = {}
+  const all = $app.findAllRecords("item_prices")
   for (let i = 0; i < all.length; i++) {
     const p = all[i]
     map[relId(p, "item") + "|" + relId(p, "version")] = p.getInt("price_cents")
   }
+  const own = $app.findAllRecords("staff_item_prices")
+  for (let i = 0; i < own.length; i++) {
+    const p = own[i]
+    map[relId(p, "staff") + "|" + relId(p, "item") + "|" + relId(p, "version")] = p.getInt("price_cents")
+  }
   return map
 }
 
-function buildLines(items, versionId, unitMap) {
+// 账号价优先，没配就回落到全局价；都没配返回 undefined（按 0 算）
+function unitPrice(unitMap, itemId, versionId, ownerId) {
+  if (ownerId) {
+    const own = unitMap[ownerId + "|" + itemId + "|" + versionId]
+    if (own !== undefined) return own
+  }
+  return unitMap[(itemId || "") + "|" + versionId]
+}
+
+// freeIds：不计价的项目（H5 上取消勾选「计入价格」），单价按 0 算但明细照留
+function buildLines(items, versionId, unitMap, ownerId, freeIds) {
   const lines = []
   for (let i = 0; i < items.length; i++) {
     const s = items[i]
-    const unit = unitMap[(s.item_id || "") + "|" + versionId]
+    const unit = unitPrice(unitMap, s.item_id || "", versionId, ownerId)
+    const free = !!(freeIds && freeIds[s.item_id || ""])
     lines.push({
       itemId: s.item_id || "",
       name: s.name || "",
       category: s.category || "main",
-      unitCents: unit === undefined ? 0 : unit,
+      unitCents: free || unit === undefined ? 0 : unit,
       qty: s.qty || 1,
       unit: s.unit || "",
       qtyMode: s.qty_mode || "check",
+      spec: s.spec || "",
     })
   }
   return lines
+}
+
+// 这一行价格归谁：客户价和代理成本都归这单的代理，工厂成本归派单的工厂
+function priceOwnerId(order, code) {
+  if (code === "customer" || code === "agent") return relId(order, "agent")
+  if (code === "factory") return relId(order, "factory")
+  return ""
+}
+
+// 账号维度的项目配置（staff_item_settings），按项目 id 索引。
+// 总部是「虚拟代理」，不占行：没配的项一律回落到 items 上的默认值。
+function loadShopSettings(staffId) {
+  const map = {}
+  if (!staffId) return map
+  let rows = []
+  try {
+    rows = $app.findRecordsByFilter(
+      "staff_item_settings",
+      "staff = {:s}",
+      "",
+      500,
+      0,
+      { s: staffId }
+    )
+  } catch (e) {
+    rows = []
+  }
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]
+    const itemId = relId(r, "item")
+    if (!itemId) continue
+    map[itemId] = {
+      recordId: r.id,
+      alias: r.getString("alias"),
+      h5_visible: r.getBool("h5_visible"),
+      h5_default: r.getBool("h5_default"),
+      in_price: r.getBool("in_price"),
+      sort: r.getInt("sort"),
+      // file 字段和 relation 一样存的是数组，getString 取不到
+      image: relId(r, "image"),
+    }
+  }
+  return map
+}
+
+// 客户版不计价的项目：items.in_price = false，代理在自己账号的项目配置里还可以改
+function freeItemIds(order) {
+  const map = {}
+  const all = $app.findAllRecords("items")
+  for (let i = 0; i < all.length; i++) {
+    if (all[i].getBool("in_price")) continue
+    map[all[i].id] = true
+  }
+  const agentId = relId(order, "agent")
+  if (!agentId) return map
+  const shop = loadShopSettings(agentId)
+  for (const itemId in shop) {
+    if (shop[itemId].in_price) delete map[itemId]
+    else map[itemId] = true
+  }
+  return map
 }
 
 // 计价用哪一版项目：审核后 > 代理核对后 > 客户原始
@@ -327,12 +437,30 @@ function recalcOrderPrices(order) {
   const items = effectiveItems(order.id)
   const versions = $app.findAllRecords("price_versions")
   const unitMap = buildUnitMap()
+  const agentId = relId(order, "agent")
+  const factoryId = relId(order, "factory")
+  // 「不计价」只对客户版生效：客户不付钱，工厂/代理的成本照常算
+  const freeIds = freeItemIds(order)
 
   for (let v = 0; v < versions.length; v++) {
     const version = versions[v]
     if (!version.getBool("is_active")) continue
 
     const existing = findOrderPrice(order.id, version.id)
+    const code = version.getString("code")
+
+    const ownerId = priceOwnerId(order, code)
+    // 代理成本行要挂在代理名下，工厂成本行要派了单才有
+    const skip = (code === "agent" && !agentId) || (code === "factory" && !factoryId)
+    // 没有归属方就不留行：散客没有代理成本，没派单就没有工厂成本
+    // 但已经手工加价/定过价的行不删，避免把账丢掉（规则本来也不让无归属的人看到）
+    if (skip) {
+      if (existing && !existing.getInt("adjust_cents") && existing.getString("price_mode") !== "fixed") {
+        $app.delete(existing)
+      }
+      continue
+    }
+
     const mode = existing ? existing.getString("price_mode") || "formula" : "formula"
     const fixedCents = existing ? existing.getInt("fixed_cents") : 0
     const adjustCents = existing ? existing.getInt("adjust_cents") : 0
@@ -340,7 +468,7 @@ function recalcOrderPrices(order) {
     const result = pricing.calcPrice({
       priceMode: mode,
       fixedCents: fixedCents,
-      lines: buildLines(items, version.id, unitMap),
+      lines: buildLines(items, version.id, unitMap, ownerId, code === "customer" ? freeIds : null),
       adjustCents: adjustCents,
     })
 
@@ -419,11 +547,19 @@ function handleCreateOrder(c) {
   const rawItems = asJson(body.items, [])
   if (!rawItems.length) return c.json(400, { message: "请至少选择一个项目" })
 
+  // 配了规格的项目必须选规格，别等到生产时才发现客户没说清
+  const specErr = checkItemSpecs(rawItems)
+  if (specErr) return c.json(400, { message: specErr })
+
   // 带了代理标识就必须匹配得上：篡改链接不允许静默降级成「无代理」直接进审核
   const agentCode = String(body.agent || "").trim()
   const agent = findAgentByCode(agentCode)
   if (agentCode && !agent) {
     return c.json(400, { message: "代理链接无效或已失效，请通过代理提供的链接重新进入" })
+  }
+  // 代理底价由管理员在账号上分配的价格版本决定，没分配就下单只会得到一堆 0
+  if (agent && !relId(agent, "price_version")) {
+    return c.json(400, { message: "该代理还没有分配价格，请联系管理员" })
   }
 
   const orderCol = $app.findCollectionByNameOrId("orders")
@@ -435,12 +571,22 @@ function handleCreateOrder(c) {
   order.set("contact_name", body.contact_name || customer.getString("display_name") || "")
   order.set("phone", body.phone || customer.getString("phone") || "")
   order.set("address", body.address || "")
-  order.set("remark", body.remark || "")
+  order.set("remark", remark.sanitizeRemark(body.remark))
   order.set("status", "pending")
   // 代理的客户先由代理核对，审核员直接下的单还是直接进审核
   order.set("review_status", agent ? "agent_pending" : "pending")
   order.set("is_deleted", false)
   $app.save(order)
+
+  // 客户归属第一个给他下单的代理：之后不带链接进来，H5 的价格也按这个代理算
+  if (agent && !relId(customer, "agent")) {
+    try {
+      customer.set("agent", agent.id)
+      $app.save(customer)
+    } catch (e) {
+      console.log("[customer] bind agent failed: " + errText(e))
+    }
+  }
 
   // 客户原始尺寸快照
   const data = asJson(measurement.get("data"), {})
@@ -469,6 +615,7 @@ function onOrderCreateRequest(e) {
   try {
     const rec = e.record
     if (rec && !rec.getString("order_no")) rec.set("order_no", genOrderNo())
+    if (rec) rec.set("remark", remark.sanitizeRemark(rec.getString("remark")))
   } catch (err) {
     console.log("[order] createRequest hook error: " + errText(err))
   }
@@ -560,7 +707,9 @@ function handleReview(c) {
   // 最终项目：不传则沿用客户选择
   const finalItems = asJson(body.items, null)
   if (finalItems && finalItems.length) {
-    // 先清掉旧的 final
+    // 先清掉旧的 final，顺手记住哪些项目上次设了「不给工厂看」，
+    // 重审时不该把隐藏的项目又露出来
+    const visibleMap = {}
     try {
       const olds = $app.findRecordsByFilter(
         "order_items",
@@ -570,11 +719,14 @@ function handleReview(c) {
         0,
         { o: orderId }
       )
-      for (let i = 0; i < olds.length; i++) $app.delete(olds[i])
+      for (let i = 0; i < olds.length; i++) {
+        visibleMap[relId(olds[i], "item")] = olds[i].getBool("factory_visible")
+        $app.delete(olds[i])
+      }
     } catch (e) {}
 
     // 沿用订单里已固化的类型/单位，后台改配置不影响这张单
-    saveOrderItems(orderId, "final", finalItems, orderItemConfig(orderId))
+    saveOrderItems(orderId, "final", finalItems, orderItemConfig(orderId), visibleMap)
   }
 
   recalcOrderPrices(order)
@@ -732,34 +884,29 @@ function handleAdjust(c) {
   const price = findOrderPrice(order.id, versionId)
   if (!price) return c.json(404, { message: "该版本尚无价格记录" })
 
-  const mode = body.price_mode || price.getString("price_mode") || "formula"
-  if (mode !== "formula" && mode !== "fixed") {
-    return c.json(400, { message: "price_mode 只能是 formula 或 fixed" })
+  // 底价由管理员配的项目价累加得出，审核员只能在此基础上加价（可填负数减价），
+  // 每次加价必须写清原因，事后对账要能看懂这一笔是怎么来的
+  const deltaCents = Math.round(Number(body.amount_cents))
+  if (!isFinite(deltaCents) || !deltaCents) {
+    return c.json(400, { message: "请填写加价金额" })
   }
-
-  const fixedCents =
-    body.fixed_cents !== undefined
-      ? Math.round(Number(body.fixed_cents))
-      : price.getInt("fixed_cents")
-  const deltaCents = body.amount_cents !== undefined ? Math.round(Number(body.amount_cents)) : 0
-  if (!isFinite(fixedCents) || !isFinite(deltaCents)) {
-    return c.json(400, { message: "金额必须是整数（分）" })
-  }
+  const reason = String(body.reason || "").trim()
+  if (!reason) return c.json(400, { message: "请填写加价备注，如：这个颜色特殊" })
 
   const totalBefore = price.getInt("total_cents")
   const newAdjust = price.getInt("adjust_cents") + deltaCents
 
   const items = effectiveItems(order.id)
   const unitMap = buildUnitMap()
+  const code = versionCode(versionId)
   const result = pricing.calcPrice({
-    priceMode: mode,
-    fixedCents: mode === "fixed" ? fixedCents : 0,
-    lines: buildLines(items, versionId, unitMap),
+    priceMode: price.getString("price_mode") || "formula",
+    fixedCents: price.getInt("fixed_cents"),
+    // 加价只改这一行的调整额，单价还是按这一行的账号价重算
+    lines: buildLines(items, versionId, unitMap, priceOwnerId(order, code), code === "customer" ? freeItemIds(order) : null),
     adjustCents: newAdjust,
   })
 
-  price.set("price_mode", mode)
-  price.set("fixed_cents", mode === "fixed" ? fixedCents : 0)
   price.set("adjust_cents", newAdjust)
   price.set("base_cents", result.baseCents)
   price.set("items_cents", result.itemsCents)
@@ -776,7 +923,7 @@ function handleAdjust(c) {
   adj.set("order", order.id)
   adj.set("version", versionId)
   adj.set("amount_cents", deltaCents)
-  adj.set("reason", body.reason || "")
+  adj.set("reason", reason)
   adj.set("operator", staff.id)
   adj.set("total_before_cents", totalBefore)
   adj.set("total_after_cents", result.totalCents)
@@ -785,7 +932,7 @@ function handleAdjust(c) {
   writeLog(order.id, staff.id, "adjust", {
     version: versionId,
     amount_cents: deltaCents,
-    reason: body.reason || "",
+    reason: reason,
   })
 
   return c.json(200, { total_cents: result.totalCents, adjust_cents: newAdjust })
@@ -793,24 +940,84 @@ function handleAdjust(c) {
 
 // ---------------------------------------------------------------- 项目价格
 
+function versionCode(versionId) {
+  try {
+    return $app.findRecordById("price_versions", versionId).getString("code")
+  } catch (e) {
+    return ""
+  }
+}
+
+function findVersionByCode(code) {
+  try {
+    return $app.findFirstRecordByData("price_versions", "code", code)
+  } catch (e) {
+    return null
+  }
+}
+
+// POST /api/gg/item-prices
+// body: { item, version, price_cents, staff? }
+//   不带 staff → 全局客户价（只有内部能改）
+//   带 staff   → 该账号的价；代理只能改自己的「客户价」，成本由内部定
 function handleUpsertPrice(c) {
   const staff = currentStaff(c)
   if (!staff) return c.json(403, { message: "仅后台账号可维护价格" })
-  // 代理价由内部定，代理只能看自己的价格，不能改
-  if (isRole(staff, ["agent"])) return c.json(403, { message: "代理不能修改价格" })
 
   const body = reqInfo(c).body || {}
   const itemId = body.item || ""
   const versionId = body.version || ""
+  const ownerId = String(body.staff || "")
   const priceCents = Math.round(Number(body.price_cents))
 
   if (!itemId || !versionId) return c.json(400, { message: "缺少项目或价格版本" })
   if (!isFinite(priceCents) || priceCents < 0) {
     return c.json(400, { message: "价格必须是不小于 0 的整数（分）" })
   }
-  if (!staff.getBool("can_view_all_prices") && relId(staff, "price_version") !== versionId) {
-    return c.json(403, { message: "无权修改该价格版本" })
+
+  const internal =
+    staff.getBool("can_view_all_prices") || isRole(staff, ["admin", "reviewer"])
+
+  if (ownerId) {
+    if (isRole(staff, ["factory"])) return c.json(403, { message: "工厂不能修改价格" })
+    if (!internal) {
+      // 代理只能改自己账号、且只能改「给客户的价格」，成本价是内部定的
+      if (ownerId !== staff.id || versionCode(versionId) !== "customer") {
+        return c.json(403, { message: "只能修改自己的客户价" })
+      }
+    }
+    let owner = null
+    try {
+      owner = $app.findRecordById("staff", ownerId)
+    } catch (e) {
+      owner = null
+    }
+    if (!owner) return c.json(400, { message: "账号不存在" })
+
+    let rec = null
+    try {
+      rec = $app.findFirstRecordByFilter(
+        "staff_item_prices",
+        "staff = {:s} && item = {:i} && version = {:v}",
+        { s: ownerId, i: itemId, v: versionId }
+      )
+    } catch (e) {
+      rec = null
+    }
+    if (!rec) {
+      rec = new Record($app.findCollectionByNameOrId("staff_item_prices"))
+      rec.set("staff", ownerId)
+      rec.set("item", itemId)
+      rec.set("version", versionId)
+    }
+    rec.set("price_cents", priceCents)
+    $app.save(rec)
+
+    return c.json(200, { id: rec.id, staff: ownerId, price_cents: priceCents })
   }
+
+  // 全局客户价：只有内部能改
+  if (!internal) return c.json(403, { message: "无权修改该价格版本" })
 
   let rec = null
   try {
@@ -832,6 +1039,136 @@ function handleUpsertPrice(c) {
   $app.save(rec)
 
   return c.json(200, { id: rec.id, price_cents: priceCents })
+}
+
+// GET /api/gg/items/prices?agent=code
+// 客户看到的价：客户已归属的代理 > 链接里的代理 > 全局客户价
+function handleItemPrices(c) {
+  const customer = currentCustomer(c)
+  if (!customer) return c.json(403, { message: "请先登录客户账号" })
+
+  const q = reqInfo(c).query || {}
+  let agent = null
+  const bound = relId(customer, "agent")
+  if (bound) {
+    try {
+      agent = $app.findRecordById("staff", bound)
+    } catch (e) {
+      agent = null
+    }
+  }
+  if (!agent) agent = findAgentByCode(String(q.agent || "").trim())
+
+  const version = findVersionByCode("customer")
+  if (!version) return c.json(200, { prices: {} })
+
+  const unitMap = buildUnitMap()
+  const all = $app.findAllRecords("items")
+  // 代理账号上的项目配置；总部就是空，全部回落到 items
+  const shop = agent ? loadShopSettings(agent.id) : {}
+  const settingsCol = $app.findCollectionByNameOrId("staff_item_settings")
+  const prices = {}
+  const items = {}
+  for (let i = 0; i < all.length; i++) {
+    const it = all[i]
+    if (!it.getBool("is_active") || it.get("is_deleted") === true) continue
+    const cents = unitPrice(unitMap, it.id, version.id, agent ? agent.id : "")
+    if (cents !== undefined) prices[it.id] = cents
+
+    const own = shop[it.id] || null
+    // 图片：代理传了自己的图就用（文件本身是公开可读的，不需要额外 token）
+    const icon =
+      own && own.image
+        ? "/api/files/" + settingsCol.id + "/" + own.recordId + "/" + own.image
+        : ""
+    items[it.id] = {
+      // 客户看到的名字：代理别名 > 总部别名 > 项目原名
+      name: String((own && own.alias) || it.getString("alias") || it.getString("name")),
+      h5_visible: own ? own.h5_visible : it.getBool("h5_visible"),
+      h5_default: own ? own.h5_default : it.getBool("h5_default"),
+      in_price: own ? own.in_price : it.getBool("in_price"),
+      // 0 / 没配 = 跟随总部排序
+      sort: own && own.sort ? own.sort : it.getInt("sort"),
+      icon: icon,
+    }
+  }
+  return c.json(200, { prices: prices, items: items })
+}
+
+// POST /api/gg/orders-assign-factory
+// body: { order_id, factory }
+// 审核指派工厂后才有工厂成本行，工厂也才能看到这张单
+function handleAssignFactory(c) {
+  const staff = currentStaff(c)
+  if (!staff || !isRole(staff, ["reviewer", "admin"])) {
+    return c.json(403, { message: "仅审核员或管理员可指派工厂" })
+  }
+
+  const body = reqInfo(c).body || {}
+  const orderId = body.order_id || ""
+  if (!orderId) return c.json(400, { message: "缺少订单 ID" })
+
+  let order
+  try {
+    order = $app.findRecordById("orders", orderId)
+  } catch (e) {
+    return c.json(404, { message: "订单不存在" })
+  }
+
+  const factoryId = String(body.factory || "")
+  if (factoryId) {
+    let f = null
+    try {
+      f = $app.findRecordById("staff", factoryId)
+    } catch (e) {
+      f = null
+    }
+    if (!f || f.getString("role_code") !== "factory") {
+      return c.json(400, { message: "工厂账号不存在" })
+    }
+  }
+
+  order.set("factory", factoryId)
+  $app.save(order)
+  // 重新读一次，确保计价拿到落库后的归属关系
+  recalcOrderPrices($app.findRecordById("orders", orderId))
+  writeLog(orderId, staff.id, "assign_factory", { factory: factoryId })
+
+  return c.json(200, { factory: factoryId })
+}
+
+// POST /api/gg/orders-item-visibility
+// body: { order_item_id, factory_visible }
+// 审核后的生产项目逐个设置「给不给工厂看」：隐藏的项目工厂接口层就查不到
+function handleItemVisibility(c) {
+  const staff = currentStaff(c)
+  if (!staff || !isRole(staff, ["reviewer", "admin"])) {
+    return c.json(403, { message: "仅审核员或管理员可设置" })
+  }
+
+  const body = reqInfo(c).body || {}
+  const recordId = String(body.order_item_id || "")
+  if (!recordId) return c.json(400, { message: "缺少项目记录 ID" })
+
+  let rec = null
+  try {
+    rec = $app.findRecordById("order_items", recordId)
+  } catch (e) {
+    return c.json(404, { message: "项目不存在" })
+  }
+  if (rec.getString("stage") !== "final") {
+    return c.json(400, { message: "只有审核后的生产项目可以设置工厂可见" })
+  }
+
+  const visible = body.factory_visible !== false
+  rec.set("factory_visible", visible)
+  $app.save(rec)
+  writeLog(relId(rec, "order"), staff.id, "item_visibility", {
+    name: rec.getString("name"),
+    factory_visible: visible,
+  })
+
+  return c.json(200, { factory_visible: visible })
 }
 
 // ---------------------------------------------------------------- 代理链接
@@ -963,6 +1300,11 @@ function syncStaffRole(e) {
       if (!menus || !menus.length) rec.set("menus", asJson(role.get("menus"), []))
     } catch (err) {}
   }
+  // 代理底价来自账号上分配的价格版本：建号时就必须分配，
+  // 否则只能由审核员手工造价格（这正是要干掉的流程）
+  if (rec.getString("role_code") === "agent" && !relId(rec, "price_version")) {
+    throw new BadRequestError("请先给代理分配价格版本")
+  }
   e.next()
 }
 
@@ -975,6 +1317,9 @@ module.exports = {
   handleScore: handleScore,
   handleAdjust: handleAdjust,
   handleUpsertPrice: handleUpsertPrice,
+  handleItemPrices: handleItemPrices,
+  handleAssignFactory: handleAssignFactory,
+  handleItemVisibility: handleItemVisibility,
   handleAgentCheck: handleAgentCheck,
   handleLookup: handleLookup,
   onOrderCreateRequest: onOrderCreateRequest,

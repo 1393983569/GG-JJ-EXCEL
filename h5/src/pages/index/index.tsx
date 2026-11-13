@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { View, Text, Swiper, SwiperItem } from '@tarojs/components'
 import Taro, { useDidShow } from '@tarojs/taro'
 import { pb, yuan } from '../../api/pb'
+import { rememberAgent, withAgent } from '../../api/agent'
 import './index.scss'
 
 const ENTRIES = [
@@ -49,6 +50,8 @@ export default function Index() {
   const [orders, setOrders] = useState<any[]>([])
 
   useDidShow(() => {
+    // 刷新、从登录页返回、从历史记录进来时都再抓一次代理标识
+    rememberAgent()
     const u: any = pb.authStore.isValid ? pb.authStore.record : null
     setUser(u)
     if (u) loadOrders(u.id)
@@ -88,10 +91,10 @@ export default function Index() {
 
   const go = (url: string) => {
     if (!pb.authStore.isValid) {
-      Taro.navigateTo({ url: '/pages/login/index' })
+      Taro.navigateTo({ url: withAgent('/pages/login/index') })
       return
     }
-    Taro.navigateTo({ url })
+    Taro.navigateTo({ url: withAgent(url) })
   }
 
   const logout = () => {
@@ -117,7 +120,7 @@ export default function Index() {
             onClick={() =>
               user
                 ? Taro.navigateTo({ url: '/pages/orders/index' })
-                : Taro.navigateTo({ url: '/pages/login/index' })
+                : Taro.navigateTo({ url: withAgent('/pages/login/index') })
             }
           >
             {user ? '我的订单' : '去登录'}

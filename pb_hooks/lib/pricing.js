@@ -27,9 +27,11 @@ function toQty(mode, v) {
  * 导出 / 展示用的项目文本
  * 勾选型：五指袜
  * 数量型：手套 2对（没有单位时退化成 “手套 ×2”）
+ * 带规格：手套（连体）2对
  */
-function renderItemText(name, qty, unit, qtyMode) {
-  const text = String(name || "")
+function renderItemText(name, qty, unit, qtyMode, spec) {
+  const s = String(spec || "")
+  const text = String(name || "") + (s ? "（" + s + "）" : "")
   const mode = toQtyMode(qtyMode)
   if (mode === "check") return text
   const n = toQty(mode, qty)
@@ -75,8 +77,9 @@ function calcPrice(input) {
       qty: Number(qty) || 1,
       unit: unit,
       qty_mode: qtyMode,
-      // 导出文本：勾选型只有项目名，数量型拼数量与单位
-      label: renderItemText(line.name, qty, unit, qtyMode),
+      spec: String(line.spec || ""),
+      // 导出文本：勾选型只有项目名，数量型拼数量与单位，选了规格就带上
+      label: renderItemText(line.name, qty, unit, qtyMode, line.spec),
       amount_cents: Number(amountCents) || 0,
     })
 

@@ -8,6 +8,18 @@
     />
     <meta name="format-detection" content="telephone=no" />
     <title>定制订单</title>
+    <script>
+      // 代理专属链接形如 /#/pages/index/index?agent=xxx，也可能是不带 hash 的 /?agent=xxx。
+      // 框架启动时会把地址栏改写成 hash 路由，那一刻之后参数就没了，
+      // 所以要在任何脚本之前把标识先落到 localStorage（agent_code_raw，原始字符串）。
+      ;(function () {
+        try {
+          var m = /[?&]agent=([^&#]*)/.exec(window.location.search + window.location.hash)
+          var code = m ? decodeURIComponent(m[1]).trim() : ''
+          if (code) window.localStorage.setItem('agent_code_raw', code)
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>
