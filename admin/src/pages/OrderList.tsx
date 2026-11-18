@@ -17,6 +17,7 @@ import { useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
 import { pb, STATUS_MAP, yuan, type Order, type OrderPrice } from '../pb'
 import { useAuth } from '../auth'
+import ExportWordModal from '../components/ExportWordModal'
 
 const { RangePicker } = DatePicker
 
@@ -26,6 +27,7 @@ export default function OrderList() {
   const navigate = useNavigate()
   const { message } = App.useApp()
   const { user } = useAuth()
+  const isFactory = (user as any)?.role_code === 'factory'
 
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(false)
@@ -34,18 +36,46 @@ export default function OrderList() {
   const [pageSize, setPageSize] = useState(20)
   const [kw, setKw] = useState('')
   const [status, setStatus] = useState<string | undefined>()
+  const [catalog, setCatalog] = useState<string | undefined>()
+  const [catalogs, setCatalogs] = useState<string[]>([])
   const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null)
   const [selected, setSelected] = useState<string[]>([])
+  const [exportIds, setExportIds] = useState<string[]>([])
+
+  // 品类筛选：从项目字典里取，空品类的历史订单按衣服算
+  useEffect(() => {
+    pb.collection('items')
+      .getFullList<any>({ filter: 'is_deleted != true', sort: 'sort' })
+      .then((list) => {
+        const out: string[] = []
+        list.forEach((it) => {
+          const c = it.catalog || '衣服'
+          if (out.indexOf(c) < 0) out.push(c)
+        })
+        setCatalogs(out)
+      })
+      .catch(() => {})
+  }, [])
 
   const load = async (p = page, ps = pageSize) => {
     setLoading(true)
     try {
       const parts = ['is_deleted != true']
+      // 工厂只看已确认及之后的单；关闭单也留着，但置灰提示，不直接消失
+      if (isFactory) parts.push('status != "pending"')
       if (kw.trim()) {
         const safe = kw.trim().replace(/"/g, '')
         parts.push(`(order_no ~ "${safe}" || phone ~ "${safe}" || contact_name ~ "${safe}")`)
       }
       if (status) parts.push(`status = "${status}"`)
+      if (catalog) {
+        // 改造前的订单没有 catalog，都算衣服
+        parts.push(
+          catalog === '衣服'
+            ? '(catalog = "衣服" || catalog = "")'
+            : `catalog = "${catalog}"`
+        )
+      }
       if (range) {
         parts.push(
           `created >= "${range[0].format('YYYY-MM-DD 00:00:00')}" && created <= "${range[1].format(
@@ -110,6 +140,12 @@ export default function OrderList() {
         render: (v, r) => <a onClick={() => navigate(`/orders/${r.id}`)}>{v}</a>,
       },
       {
+        title: '品类',
+        dataIndex: 'catalog',
+        width: 80,
+        render: (v: string) => <Tag color="geekblue">{v || '衣服'}</Tag>,
+      },
+      {
         title: '客户',
         dataIndex: 'contact_name',
         width: 100,
@@ -153,6 +189,7 @@ export default function OrderList() {
         dataIndex: 'status',
         width: 90,
         render: (v: string) => {
+          if (isFactory && v === 'cancelled') return <Tag color="default">订单关闭</Tag>
           const s = STATUS_MAP[v] || { text: v, color: 'default' }
           return <Tag color={s.color}>{s.text}</Tag>
         },
@@ -184,7 +221,7 @@ export default function OrderList() {
           <Button
             icon={<DownloadOutlined />}
             disabled={selected.length === 0}
-            onClick={() => message.info('批量导出将在下一步接入')}
+            onClick={() => setExportIds(selected)}
           >
             导出选中 ({selected.length})
           </Button>
@@ -213,7 +250,17 @@ export default function OrderList() {
           style={{ width: 130 }}
           value={status}
           onChange={(v) => setStatus(v)}
-          options={Object.entries(STATUS_MAP).map(([value, s]) => ({ value, label: s.text }))}
+          options={Object.entries(STATUS_MAP)
+            .filter(([value]) => !isFactory || value !== 'pending')
+            .map(([value, s]) => ({ value, label: s.text }))}
+        />
+        <Select
+          placeholder="品类"
+          allowClear
+          style={{ width: 110 }}
+          value={catalog}
+          onChange={(v) => setCatalog(v)}
+          options={catalogs.map((c) => ({ value: c, label: c }))}
         />
         <RangePicker
           value={range as any}
@@ -233,6 +280,7 @@ export default function OrderList() {
 
       <Table<Row>
         rowKey="id"
+        rowClassName={(r) => (r.status === 'cancelled' ? 'order-closed-row' : '')}
         size="middle"
         loading={loading}
         columns={columns}
@@ -260,6 +308,11 @@ export default function OrderList() {
           {user.can_view_all_prices ? '全部版本' : '仅所属版本'}
         </div>
       )}
+      <ExportWordModal
+        open={exportIds.length > 0}
+        orderIds={exportIds}
+        onClose={() => setExportIds([])}
+      />
     </Card>
   )
 }

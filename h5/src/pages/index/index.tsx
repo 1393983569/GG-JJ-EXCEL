@@ -48,15 +48,50 @@ const STATUS_TEXT: Record<string, { text: string; cls: string }> = {
 export default function Index() {
   const [user, setUser] = useState<any>(pb.authStore.isValid ? pb.authStore.record : null)
   const [orders, setOrders] = useState<any[]>([])
+  // 品类入口：由服务端下发的可见项目去重得出，代理只卖床垫时这里就只有床垫
+  const [catalogs, setCatalogs] = useState<string[]>([])
 
   useDidShow(() => {
     // 刷新、从登录页返回、从历史记录进来时都再抓一次代理标识
     rememberAgent()
     const u: any = pb.authStore.isValid ? pb.authStore.record : null
     setUser(u)
-    if (u) loadOrders(u.id)
-    else setOrders([])
+    if (u) {
+      loadOrders(u.id)
+      loadCatalogs()
+    } else {
+      setOrders([])
+      setCatalogs([])
+    }
   })
+
+  const loadCatalogs = async () => {
+    try {
+      const res: any = await pb.send(
+        `/api/gg/items/prices?agent=${encodeURIComponent(rememberAgent())}`,
+        {}
+      )
+      // 品类字典：顺序和停用都由后台控制，这里不再按项目自己推
+      const dict: any[] = Array.isArray(res?.catalogs) ? res.catalogs : []
+      const list: string[] = []
+      dict.forEach((c) => {
+        const n = String((c && c.name) || '')
+        if (n && list.indexOf(n) < 0) list.push(n)
+      })
+      if (!list.length) {
+        const conf: Record<string, any> = res?.items || {}
+        Object.keys(conf).forEach((id) => {
+          const it = conf[id]
+          if (!it || it.h5_visible === false) return
+          const c = it.catalog || '衣服'
+          if (list.indexOf(c) < 0) list.push(c)
+        })
+      }
+      setCatalogs(list)
+    } catch (e) {
+      setCatalogs([])
+    }
+  }
 
   const loadOrders = async (uid: string) => {
     try {
@@ -136,6 +171,26 @@ export default function Index() {
           </View>
         ))}
       </View>
+
+      {catalogs.length > 0 && (
+        <View className="section">
+          <View className="section-head">
+            <Text className="section-title">选择品类</Text>
+          </View>
+          <View className="catalog-row">
+            {catalogs.map((c) => (
+              <View
+                className="catalog-card"
+                key={c}
+                onClick={() => go(`/pages/order/index?catalog=${encodeURIComponent(c)}`)}
+              >
+                <Text className="catalog-name">{c}</Text>
+                <Text className="catalog-tip">去选购 ›</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
 
       <View className="banner-wrap">
         <Swiper

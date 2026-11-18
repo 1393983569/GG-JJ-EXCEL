@@ -2,6 +2,17 @@ import { useEffect, useMemo, useState } from 'react'
 import { App, Alert, Button, Checkbox, Divider, Form, Input, InputNumber, Modal, Select, Space, Tabs, Tag } from 'antd'
 import { pb, type MeasureField, type MeasureGroup } from '../pb'
 
+type OrderItem = {
+  item: string
+  name: string
+  qty: number
+  category: string
+  unit?: string
+  qty_mode?: string
+  /** 客户选中的规格，如 分体 / 连体 */
+  spec?: string
+}
+
 type Props = {
   open: boolean
   orderId: string
@@ -9,16 +20,9 @@ type Props = {
   customerData: Record<string, any>
   /** 已保存的生产尺寸，用于二次审核时回显 */
   productionData?: Record<string, any>
-  customerItems: {
-    item: string
-    name: string
-    qty: number
-    category: string
-    unit?: string
-    qty_mode?: string
-    /** 客户选中的规格，如 分体 / 连体 */
-    spec?: string
-  }[]
+  customerItems: OrderItem[]
+  /** 客户最初下的项目，代理改过之后仍保留，供核对时对比 */
+  customerItemsOriginal?: OrderItem[]
   /** review=审核员；agent=代理核对，只能改尺寸/项目/成交价 */
   mode?: 'review' | 'agent'
   /** 当前成交价（分），代理模式可改 */
@@ -35,6 +39,7 @@ export default function ReviewModal({
   customerData,
   productionData,
   customerItems,
+  customerItemsOriginal,
   mode = 'review',
   terminalPrice,
   onClose,
@@ -108,6 +113,9 @@ export default function ReviewModal({
       .map((g) => ({ ...g, items: map[g.id] }))
       .concat(map['other'] ? [{ id: 'other', name: '其他', sort: 999, items: map['other'] } as any] : [])
   }, [fields, groups])
+
+  const originalItems = customerItemsOriginal || customerItems
+  const originalIds = originalItems.map((it) => it.item)
 
   // 代理核对：只提交尺寸/项目/成交价，底价由后端按项目重算，代理改不了
   const doAgentSubmit = async () => {
@@ -227,21 +235,6 @@ export default function ReviewModal({
         }
       />
 
-      {isAgent && (
-        <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>终端售价</span>
-          <InputNumber
-            size="small"
-            style={{ width: 160 }}
-            prefix="¥"
-            value={priceText ? Number(priceText) : undefined}
-            placeholder="成交价"
-            onChange={(v) => setPriceText(v === null || v === undefined ? '' : String(v))}
-          />
-          <span style={{ fontSize: 12, color: '#999' }}>客户下单时的意向价，可调整；不影响历史订单</span>
-        </div>
-      )}
-
       <Tabs
         items={[
           {
@@ -316,46 +309,84 @@ export default function ReviewModal({
             key: 'items',
             label: isAgent ? '核对项目' : '生产项目',
             children: (
-              <div style={{ maxHeight: 420, overflow: 'auto' }}>
-                {allItems.map((it) => {
-                  // 订单里的项目用下单时的快照，新加的项目用当前配置
-                  const meta = snapMeta[it.id]
-                  const mode = meta ? meta.qty_mode : it.qty_mode === 'qty' ? 'qty' : 'check'
-                  const unit = meta ? meta.unit : it.unit || ''
-                  return (
-                    <div
-                      key={it.id}
-                      style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0' }}
-                    >
-                      <Checkbox
-                        checked={selected.indexOf(it.id) >= 0}
-                        onChange={(e) => {
-                          if (e.target.checked) setSelected([...selected, it.id])
-                          else setSelected(selected.filter((x) => x !== it.id))
+              <div style={{ display: 'flex', gap: 16, maxHeight: 420 }}>
+                <div style={{ flex: 1, minWidth: 0, overflow: 'auto', paddingRight: 4 }}>
+                  {allItems.map((it) => {
+                    // 订单里的项目用下单时的快照，新加的项目用当前配置
+                    const meta = snapMeta[it.id]
+                    const mode = meta ? meta.qty_mode : it.qty_mode === 'qty' ? 'qty' : 'check'
+                    const unit = meta ? meta.unit : it.unit || ''
+                    return (
+                      <div
+                        key={it.id}
+                        style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0' }}
+                      >
+                        <Checkbox
+                          checked={selected.indexOf(it.id) >= 0}
+                          onChange={(e) => {
+                            if (e.target.checked) setSelected([...selected, it.id])
+                            else setSelected(selected.filter((x) => x !== it.id))
+                          }}
+                        >
+                          {it.name}
+                          {it.spec ? `（${it.spec}）` : ''}
+                        </Checkbox>
+                        {originalIds.indexOf(it.id) >= 0 && <Tag color="blue">客户原选</Tag>}
+                        {it.category === 'base' && <Tag color="red">基础</Tag>}
+                        {it.category !== 'base' && mode === 'qty' && (
+                          <InputNumber
+                            size="small"
+                            min={1}
+                            style={{ width: 100 }}
+                            addonAfter={unit || undefined}
+                            value={qtyMap[it.id] || 1}
+                            onChange={(v) =>
+                              setQtyMap({ ...qtyMap, [it.id]: Math.max(1, Number(v) || 1) })
+                            }
+                          />
+                        )}
+                        {it.category !== 'base' && mode !== 'qty' && (
+                          <Tag>勾选型 · 1 份</Tag>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+                <div
+                  style={{
+                    width: 280,
+                    flexShrink: 0,
+                    borderLeft: '1px solid #f0f0f0',
+                    paddingLeft: 16,
+                    overflow: 'auto',
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#666', marginBottom: 8 }}>
+                    客户下单选项
+                  </div>
+                  {originalItems.length === 0 ? (
+                    <div style={{ color: '#999', fontSize: 12 }}>客户未选择项目</div>
+                  ) : (
+                    originalItems.map((it) => (
+                      <div
+                        key={it.item}
+                        style={{
+                          fontSize: 13,
+                          color: '#555',
+                          padding: '5px 0',
+                          borderBottom: '1px dashed #f0f0f0',
                         }}
                       >
                         {it.name}
                         {it.spec ? `（${it.spec}）` : ''}
-                      </Checkbox>
-                      {it.category === 'base' && <Tag color="red">基础</Tag>}
-                      {it.category !== 'base' && mode === 'qty' && (
-                        <InputNumber
-                          size="small"
-                          min={1}
-                          style={{ width: 100 }}
-                          addonAfter={unit || undefined}
-                          value={qtyMap[it.id] || 1}
-                          onChange={(v) =>
-                            setQtyMap({ ...qtyMap, [it.id]: Math.max(1, Number(v) || 1) })
-                          }
-                        />
-                      )}
-                      {it.category !== 'base' && mode !== 'qty' && (
-                        <Tag>勾选型 · 1 份</Tag>
-                      )}
-                    </div>
-                  )
-                })}
+                        <span style={{ color: '#999', marginLeft: 6 }}>
+                          {it.qty || 1}
+                          {it.unit || ''}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             ),
           },

@@ -30,6 +30,7 @@
     "@tarojs/shared": "4.3.1",
     "@tarojs/taro": "4.3.1",
     "pocketbase": "^0.28.1",
+    "quill": "^2.0.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

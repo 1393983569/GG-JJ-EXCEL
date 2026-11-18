@@ -20,6 +20,10 @@ type Row = {
   total_cents?: number
   itemCount: number
   measurementCode: string
+  /** 同一次结算拆出来的多张单共用 */
+  batch_no?: string
+  /** 一单一品类 */
+  catalog?: string
 }
 
 export default function MyOrders() {
@@ -64,6 +68,8 @@ export default function MyOrders() {
           total_cents: priceMap[o.id],
           itemCount: 0,
           measurementCode: o.measurement || '',
+          batch_no: o.batch_no || '',
+          catalog: o.catalog || '衣服',
         }))
       )
     } catch (e: any) {
@@ -89,29 +95,45 @@ export default function MyOrders() {
         </View>
       )}
 
-      {rows.map((r) => {
+      {rows.map((r, i) => {
         const s = STATUS[r.status] || { text: r.status, cls: '' }
+        // 一次结算拆成多张单：只在这一批的第一张前面提示，别让客户以为重复下单了
+        const prev = i > 0 ? rows[i - 1] : null
+        const head = !!r.batch_no && (!prev || prev.batch_no !== r.batch_no)
+        const batch = head ? rows.filter((x) => x.batch_no === r.batch_no) : []
         return (
-          <View
-            className="card"
-            key={r.id}
-            onClick={() => Taro.navigateTo({ url: `/pages/order-detail/index?id=${r.id}` })}
-          >
-            <View className="row">
-              <Text style={{ fontSize: 32, fontWeight: 600 }}>{r.order_no}</Text>
-              <Text className={'tag ' + s.cls}>{s.text}</Text>
-            </View>
-            <View className="row" style={{ marginTop: 20 }}>
-              <Text className="muted">
-                {r.itemCount} 个项目
-                {r.measurementCode ? ' · ' + r.measurementCode : ''}
-              </Text>
-              <Text style={{ fontSize: 32, color: '#cf1322', fontWeight: 600 }}>
-                {r.total_cents === undefined ? '-' : '¥' + yuan(r.total_cents)}
-              </Text>
-            </View>
-            <View className="muted" style={{ marginTop: 10 }}>
-              {String(r.created).replace('T', ' ').slice(0, 16)}
+          <View key={r.id}>
+            {head && (
+              <View
+                className="row"
+                style={{ marginTop: 8, marginBottom: 12, padding: '0 8px' }}
+              >
+                <Text className="muted">同批结算 · {batch.length} 单</Text>
+                <Text className="muted">
+                  合计 ¥{yuan(batch.reduce((sum, x) => sum + (x.total_cents || 0), 0))}
+                </Text>
+              </View>
+            )}
+            <View
+              className="card"
+              onClick={() => Taro.navigateTo({ url: `/pages/order-detail/index?id=${r.id}` })}
+            >
+              <View className="row">
+                <Text style={{ fontSize: 32, fontWeight: 600 }}>{r.order_no}</Text>
+                <Text className={'tag ' + s.cls}>{s.text}</Text>
+              </View>
+              <View className="row" style={{ marginTop: 20 }}>
+                <Text className="muted">
+                  {r.catalog} · {r.itemCount} 个项目
+                  {r.measurementCode ? ' · ' + r.measurementCode : ''}
+                </Text>
+                <Text style={{ fontSize: 32, color: '#cf1322', fontWeight: 600 }}>
+                  {r.total_cents === undefined ? '-' : '¥' + yuan(r.total_cents)}
+                </Text>
+              </View>
+              <View className="muted" style={{ marginTop: 10 }}>
+                {String(r.created).replace('T', ' ').slice(0, 16)}
+              </View>
             </View>
           </View>
         )

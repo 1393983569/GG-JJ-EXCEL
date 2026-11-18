@@ -73,11 +73,20 @@ export type PriceVersion = { id: string; name: string; code: string; sort: numbe
 
 export type ItemPrice = { id: string; item: string; version: string; price_cents: number }
 
+/** 项目绑定的定制参数：key 指向 measure_fields.key */
+export type ItemField = {
+  key: string
+  required?: boolean
+  sort?: number
+}
+
 export type Item = {
   id: string
   name: string
   category: 'base' | 'main' | 'extra'
   sort: number
+  /** 品类：衣服 / 床垫 / 袜子…，空按衣服算。要填的尺寸看品类 */
+  catalog?: string
   is_active?: boolean
   /** check 勾选型（选中即 1 份）/ qty 数量型（选中后可改数量） */
   qty_mode?: 'check' | 'qty'
@@ -117,6 +126,14 @@ export type MeasureField = {
 }
 
 export type MeasureGroup = { id: string; name: string; sort: number }
+
+/** 品类字典（只下发给 H5 启用中的，顺序即首页与 tab 顺序） */
+export type Catalog = {
+  name: string
+  sort: number
+  /** 这个品类固定要量的尺寸（品类下一套，项目共用） */
+  fields?: ItemField[]
+}
 
 export type Measurement = {
   id: string

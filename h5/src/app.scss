@@ -351,85 +351,155 @@ page {
   font-size: 28px;
 }
 
-/* ---------------- 备注富文本（contenteditable 编辑 + 详情展示） ---------------- */
-.rt-bar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.rt-btn {
-  min-width: 64px;
-  height: 60px;
-  line-height: 60px;
-  padding: 0 16px;
-  text-align: center;
-  border-radius: 10px;
-  background: #f2f4f7;
-  color: #333;
-  font-size: 26px;
-  box-sizing: border-box;
-}
-
-.rt-btn-bold {
-  font-weight: 700;
-}
-
-.rt-swatch {
-  width: 44px;
-  height: 44px;
-  border-radius: 22px;
-  border: 1px solid #e5e5e5;
-  box-sizing: border-box;
-}
-
-/* 当前光标位置的格式，按钮高亮 */
-.rt-btn.rt-on {
-  background: #1677ff;
-  color: #fff;
-}
-
-.rt-swatch.rt-on {
-  border: 3px solid #fff;
-  box-shadow: 0 0 0 2px #1677ff;
-}
-
-.rt-box {
-  position: relative;
-}
-
-/* 基准字号必须落在 16px（大写 PX 不参与 rem 转换）：
-   <font size> 是相对浏览器默认字号的档位，基准一旦偏移，
-   queryCommandValue('fontSize') 就会算出错误的档位（比如永远返回「小」）。 */
-.rt-input {
-  min-height: 150px;
+/* ---------------- 备注（只有文字和图片；H5 用 Quill，小程序用原生 Editor） ---------------- */
+/* 收起状态：看起来就是个输入框，点一下弹层里编辑 */
+.rt-field {
+  display: block; /* Taro 的自定义元素默认 inline，不给 block 的话 min-height 无效 */
+  min-height: 120px;
   background: #f7f8fa;
   border-radius: 12px;
   padding: 18px 22px;
-  font-size: 16PX;
+  font-size: 30px;
+  line-height: 1.6;
+  color: #333;
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow: hidden;
+}
+
+.rt-ph {
+  color: #999;
+}
+
+/* 弹层：底部抽屉，避免键盘把输入区顶没 */
+.rt-mask {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* 备注可能写很长，面板给到接近整屏，编辑区自己滚 */
+.rt-panel {
+  display: flex;
+  flex-direction: column;
+  height: 86vh;
+  background: #fff;
+  border-radius: 24px 24px 0 0;
+  padding: 24px 24px calc(24px + env(safe-area-inset-bottom));
+  box-sizing: border-box;
+}
+
+.rt-panel-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.rt-ops {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.rt-panel-title {
+  font-size: 30px;
+  font-weight: 600;
+  color: #222;
+}
+
+.rt-cancel {
+  padding: 10px 16px;
+  color: #666;
+  font-size: 26px;
+}
+
+.rt-done {
+  padding: 10px 30px;
+  border-radius: 10px;
+  background: #1677ff;
+  color: #fff;
+  font-size: 28px;
+}
+
+/* 内容区：H5 挂在 Quill 的宿主节点上，小程序挂在 editor 组件上，外观保持一致 */
+.rt-editor {
+  display: block;
+  flex: 1;
+  min-height: 160px;
+  background: #f7f8fa;
+  border-radius: 12px;
+  padding: 18px 22px;
+  font-size: 32px; /* = 16 CSS px */
   line-height: 1.6;
   color: #222;
   box-sizing: border-box;
   outline: none;
+  overflow-y: auto;
 }
 
-.rt-ph {
-  position: absolute;
-  left: 22px;
-  top: 18px;
-  color: #999;
-  font-size: 16PX;
-  pointer-events: none;
+/* 小程序 editor 是原生滚动容器，flex 撑不住，直接给高度 */
+.rt-editor-mp {
+  flex: none;
+  height: 62vh;
+}
+
+/* Quill 的主题 CSS 不引入：里面的 px 是浏览器单位，跟 750 设计稿的 px 对不上，
+   这里只补编辑区必需的几条骨架样式。 */
+.rt-editor {
+  /* Quill 会把 ql-container 加在宿主节点上（就是 .rt-editor 本身），
+     内容层只有 .ql-editor，字号/颜色都从宿主继承 */
+  .ql-editor {
+    position: relative;
+    min-height: 100%; /* 撑满灰色区域，点哪儿都能落光标 */
+    padding: 0;
+    font-size: inherit;
+    line-height: inherit;
+    color: inherit;
+    outline: none;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+
+  .ql-editor p {
+    margin: 0 0 8px;
+  }
+
+  /* 占位文案：Quill 会给空编辑区加 ql-blank 类 */
+  .ql-editor.ql-blank::before {
+    content: attr(data-placeholder);
+    position: absolute;
+    left: 0;
+    right: 0;
+    color: #999;
+    font-style: normal;
+    pointer-events: none;
+  }
 }
 
 /* 图片按容器宽度缩放，避免撑破页面 */
-.rt-input img,
+.rt-editor img,
 .rt-view img {
   display: block;
   max-width: 100%;
   margin: 10px 0;
+}
+
+/* 加图片的入口，放在标题栏，键盘弹起也够得着 */
+.rt-img {
+  padding: 10px 24px;
+  border-radius: 10px;
+  background: #f2f4f7;
+  color: #333;
+  font-size: 26px;
 }
 
 /* 展示端跟编辑端保持同一基准字号，否则 <font size> 的相对大小会失真 */

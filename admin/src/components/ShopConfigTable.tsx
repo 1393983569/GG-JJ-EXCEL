@@ -6,6 +6,7 @@ import {
   Image,
   Input,
   InputNumber,
+  Select,
   Space,
   Table,
   Tag,
@@ -58,6 +59,17 @@ export default function ShopConfigTable({ staffId, roleCode, showCost, costEdita
   const [saved, setSaved] = useState<Record<string, number | undefined>>({})
   const [loading, setLoading] = useState(false)
   const [fileToken, setFileToken] = useState('')
+  // 按品类批量分配：1 号代理只卖衣服、2 号只卖床垫时不用逐个点
+  const [bulkCatalog, setBulkCatalog] = useState('')
+
+  const catalogs = useMemo(() => {
+    const list: string[] = []
+    rows.forEach((r) => {
+      const c = r.item.catalog || '衣服'
+      if (list.indexOf(c) < 0) list.push(c)
+    })
+    return list
+  }, [rows])
 
   const customerVer = versions.find((v) => v.code === 'customer')
   const costVer = versions.find((v) => v.code === (isAgentAccount ? 'agent' : 'factory'))
@@ -227,6 +239,27 @@ export default function ShopConfigTable({ staffId, roleCode, showCost, costEdita
     }
   }
 
+  // 整个品类一次性可见 / 不可见：H5 首页的品类入口就是按这个算出来的
+  const setCatalogVisible = async (catalog: string, visible: boolean) => {
+    const targets = rows.filter((r) => (r.item.catalog || '衣服') === catalog)
+    if (!targets.length) return
+    try {
+      for (const r of targets) {
+        patchRow(r.itemId, { visible })
+        if (!staffId) {
+          await pb.collection('items').update(r.itemId, { h5_visible: visible })
+        } else {
+          const id = await ensureSetting({ ...r, visible })
+          await pb.collection('staff_item_settings').update(id, { h5_visible: visible })
+        }
+      }
+      message.success(`${catalog}：${targets.length} 项已设为${visible ? '可见' : '不可见'}`)
+    } catch (e: any) {
+      message.error(e?.message || '批量设置失败')
+      load()
+    }
+  }
+
   // 价格：草稿批量保存
   const savePrices = async () => {
     if (!customerVer) return
@@ -289,6 +322,11 @@ export default function ShopConfigTable({ staffId, roleCode, showCost, costEdita
               <div style={{ fontSize: 11, color: '#bbb' }}>{r.item.name}</div>
             </div>
           ),
+        },
+        {
+          title: '品类',
+          width: 80,
+          render: (_v, r) => <Tag color="geekblue">{r.item.catalog || '衣服'}</Tag>,
         },
         ...(showH5 ? ([
         {
@@ -429,7 +467,21 @@ export default function ShopConfigTable({ staffId, roleCode, showCost, costEdita
   )
 
   const extra = (
-    <Space>
+    <Space wrap>
+      <Select
+        size="small"
+        style={{ width: 130 }}
+        placeholder="按品类批量"
+        value={bulkCatalog || undefined}
+        onChange={(v) => setBulkCatalog(v || '')}
+        options={catalogs.map((c) => ({ value: c, label: c }))}
+      />
+      <Button size="small" disabled={!bulkCatalog} onClick={() => setCatalogVisible(bulkCatalog, true)}>
+        整类可见
+      </Button>
+      <Button size="small" disabled={!bulkCatalog} onClick={() => setCatalogVisible(bulkCatalog, false)}>
+        整类隐藏
+      </Button>
       <Button
         type="primary"
         icon={<SaveOutlined />}

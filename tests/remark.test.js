@@ -11,7 +11,7 @@ function check(name, fn) {
 
 console.log("备注富文本过滤")
 
-check("编辑器产出的格式全部保留", () => {
+check("历史数据里的加粗/字号标签仍然保留", () => {
   const html =
     '<b>加粗</b><font size="6">大字</font><font color="#cf1322">红字</font>' +
     '<img src="https://pb.example.com/api/files/remark_images/x/a.png" />'
@@ -58,6 +58,17 @@ check("白名单外的标签被转义成文本", () => {
 
 check("style 属性不放行（防覆盖后台界面）", () => {
   assert.strictEqual(sanitizeRemark('<b style="position:fixed;top:0">字</b>'), "<b>字</b>")
+  assert.strictEqual(
+    sanitizeRemark('<span style="color:#cf1322">字</span>'),
+    "<span>字</span>"
+  )
+})
+
+check("编辑器产物（文字 + 图片）原样通过", () => {
+  const html =
+    '<p>身高 164，腰围 78</p>' +
+    '<p><img src="https://pb.example.com/api/files/remark_images/x/a.png"></p>'
+  assert.strictEqual(sanitizeRemark(html), html)
 })
 
 check("颜色/字号非法值被丢弃", () => {

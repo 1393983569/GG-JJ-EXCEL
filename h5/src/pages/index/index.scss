@@ -290,3 +290,34 @@
   color: #9aa0aa;
   padding: 24px;
 }
+
+/* ---------------- 品类入口 ---------------- */
+
+.catalog-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.catalog-card {
+  flex: 1;
+  min-width: 220px;
+  padding: 28px;
+  border-radius: 24px;
+  background: #f5f8ff;
+  border: 1px solid #e3ecff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.catalog-name {
+  font-size: 32px;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.catalog-tip {
+  font-size: 24px;
+  color: #4d7cff;
+}

@@ -19,7 +19,7 @@ import {
   Tag,
   Typography,
 } from 'antd'
-import { ArrowLeftOutlined, AuditOutlined, EditOutlined, StarOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, AuditOutlined, DownloadOutlined, EditOutlined, StarOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import dayjs from 'dayjs'
 import {
@@ -35,6 +35,7 @@ import {
 } from '../pb'
 import { useAuth } from '../auth'
 import { renderMeasureText } from '../measureText'
+import ExportWordModal from '../components/ExportWordModal'
 import ReviewModal from './ReviewModal'
 
 /** 项目数量文本：数量型拼单位（手套 2对），勾选型不显示 */
@@ -67,6 +68,7 @@ export default function OrderDetail() {
   const [adjustments, setAdjustments] = useState<any[]>([])
   const [reviews, setReviews] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [exportOpen, setExportOpen] = useState(false)
   const [reviewOpen, setReviewOpen] = useState(false)
   const [adjustOpen, setAdjustOpen] = useState(false)
   const [adjustTarget, setAdjustTarget] = useState<OrderPrice | null>(null)
@@ -81,7 +83,20 @@ export default function OrderDetail() {
 
   const roleCode = (user as any)?.role_code || ''
   const canReview = roleCode === 'reviewer' || roleCode === 'admin'
-  const canScore = canReview || roleCode === 'agent'
+  const isFactory = roleCode === 'factory'
+  // 订单做完（done）才允许打分，待确认/待审核阶段不给入口
+  const canScore = (canReview || roleCode === 'agent') && order?.status === 'done'
+
+  const toModalItems = (list: any[]) =>
+    list.map((it) => ({
+      item: it.item,
+      name: it.name,
+      qty: it.qty,
+      category: it.category,
+      unit: it.unit,
+      qty_mode: it.qty_mode,
+      spec: it.spec,
+    }))
 
   const load = async () => {
     setLoading(true)
@@ -200,6 +215,24 @@ export default function OrderDetail() {
     }
   }
 
+  const closeOrder = async () => {
+    Modal.confirm({
+      title: '关闭订单？',
+      content: '关闭后工厂列表会置灰显示「订单关闭」，确定继续？',
+      okText: '关闭',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await pb.collection('orders').update(id, { status: 'cancelled' })
+          message.success('订单已关闭')
+          load()
+        } catch (e: any) {
+          message.error(e?.message || '关闭失败')
+        }
+      },
+    })
+  }
+
   const assignFactory = async (factoryId?: string) => {
     setAssigning(true)
     try {
@@ -260,12 +293,19 @@ export default function OrderDetail() {
           {order.order_no}
         </Typography.Title>
         <Tag color={STATUS_MAP[order.status]?.color}>
-          {STATUS_MAP[order.status]?.text || order.status}
+          {isFactory && order.status === 'cancelled'
+            ? '订单关闭'
+            : STATUS_MAP[order.status]?.text || order.status}
         </Tag>
         {reviewTag()}
         {canReview && (
           <Button type="primary" icon={<AuditOutlined />} onClick={() => setReviewOpen(true)}>
             审核
+          </Button>
+        )}
+        {canReview && order.status !== 'cancelled' && (
+          <Button danger onClick={closeOrder}>
+            关闭订单
           </Button>
         )}
         {canAgentConfirm && (
@@ -278,6 +318,9 @@ export default function OrderDetail() {
             打分
           </Button>
         )}
+        <Button icon={<DownloadOutlined />} onClick={() => setExportOpen(true)}>
+          导出 Word
+        </Button>
       </Space>
 
       <Row gutter={16}>
@@ -289,7 +332,7 @@ export default function OrderDetail() {
               <Descriptions.Item label="下单时间">
                 {dayjs(order.created).format('YYYY-MM-DD HH:mm')}
               </Descriptions.Item>
-              <Descriptions.Item label="满意度">
+              <Descriptions.Item label="贴合度">
                 {avgScore ? `${avgScore} 分（${reviews.length} 次）` : '未打分'}
               </Descriptions.Item>
               <Descriptions.Item label="所属代理">
@@ -480,7 +523,7 @@ export default function OrderDetail() {
           </Card>
 
           {reviews.length > 0 && (
-            <Card className="page-card" title="满意度记录">
+            <Card className="page-card" title="贴合度记录">
               {reviews.map((r) => (
                 <div key={r.id} style={{ padding: '6px 0', borderBottom: '1px solid #f0f0f0' }}>
                   <Space>
@@ -505,15 +548,8 @@ export default function OrderDetail() {
         // 代理核对时以「代理上次调整后的尺寸」为基准，没有就用客户原始值
         customerData={(canAgentConfirm && specCustomer?.agent_data) || customerData}
         productionData={productionData}
-        customerItems={(canAgentConfirm && itemsAgent.length ? itemsAgent : itemsCustomer).map((it) => ({
-          item: it.item,
-          name: it.name,
-          qty: it.qty,
-          category: it.category,
-          unit: it.unit,
-          qty_mode: it.qty_mode,
-          spec: it.spec,
-        }))}
+        customerItems={toModalItems(canAgentConfirm && itemsAgent.length ? itemsAgent : itemsCustomer)}
+        customerItemsOriginal={toModalItems(itemsCustomer)}
         onClose={() => setReviewOpen(false)}
         onDone={load}
       />
@@ -547,7 +583,7 @@ export default function OrderDetail() {
         </Form>
       </Modal>
 
-      <Modal title="满意度打分" open={scoreOpen} onCancel={() => setScoreOpen(false)} onOk={submitScore} okText="提交">
+      <Modal title="贴合度打分" open={scoreOpen} onCancel={() => setScoreOpen(false)} onOk={submitScore} okText="提交">
         <Form form={scoreForm} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item label="分数（1-10）" name="score" rules={[{ required: true, message: '请打分' }]}>
             <InputNumber min={1} max={10} style={{ width: '100%' }} />
@@ -557,6 +593,12 @@ export default function OrderDetail() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <ExportWordModal
+        open={exportOpen}
+        orderIds={[id]}
+        onClose={() => setExportOpen(false)}
+      />
     </div>
   )
 }

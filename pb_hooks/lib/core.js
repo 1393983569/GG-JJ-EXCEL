@@ -4,6 +4,8 @@
 const pricing = require(`${__hooks}/lib/pricing.js`)
 const measureText = require(`${__hooks}/lib/measure_text.js`)
 const remark = require(`${__hooks}/lib/remark.js`)
+// 项目 × 定制参数的绑定：并集与裁剪，纯逻辑（可单测）
+const fieldBind = require(`${__hooks}/lib/fields.js`)
 
 // ---------------------------------------------------------------- 基础工具
 
@@ -18,6 +20,11 @@ function todayPrefix() {
 
 function genOrderNo() {
   return "GG" + todayPrefix() + "-" + (Math.floor(Math.random() * 9000) + 1000)
+}
+
+// 一次结算拆成多张单时共用，前端按它把同一批订单折叠成一行
+function genBatchNo() {
+  return "B" + todayPrefix() + "-" + (Math.floor(Math.random() * 9000) + 1000)
 }
 
 function errText(err) {
@@ -147,13 +154,63 @@ function loadFieldDefs() {
   return out
 }
 
-function renderSpecText(data) {
+// 参数文本：只渲染本单项目声明的字段（bindings）。
+// 不传 bindings 时保持旧行为（全部启用字段），给没有绑定信息的历史调用兜底。
+// 尺码档案是全品类共用的，床垫单不能把档案里三个月前的胸围印到生产单上。
+function renderSpecText(data, bindings) {
   try {
-    return measureText.renderMeasureText(loadFieldDefs(), data || {})
+    const list = fieldBind.pickFields(loadFieldDefs(), bindings)
+    return measureText.renderMeasureText(list, data || {})
   } catch (e) {
     console.log("[spectext] " + errText(e))
     return ""
   }
+}
+
+function fieldLabel(key) {
+  const defs = loadFieldDefs()
+  for (let i = 0; i < defs.length; i++) {
+    if (defs[i].key === key) return defs[i].label || key
+  }
+  return key
+}
+
+// 一单一品类：代理核对 / 审核改项目时不许混进别的品类，
+// 否则工厂指派、审核字段、导出模板都会错位
+function checkSingleCatalog(rawItems) {
+  let catalog = ""
+  for (let i = 0; i < (rawItems || []).length; i++) {
+    const cfg = itemConfig(rawItems[i].item_id || "")
+    if (!cfg) continue
+    const one = cfg.catalog || "衣服"
+    if (!catalog) catalog = one
+    else if (one !== catalog) return "一张订单只能有一个品类（" + catalog + " / " + one + "），请分开下单"
+  }
+  return ""
+}
+
+// 品类固定的参数集：这套尺寸是这个品类（打版方案）定好的，和选哪个项目无关
+function catalogFields(name) {
+  if (!name) return []
+  try {
+    const rec = $app.findFirstRecordByFilter("catalogs", "name = {:n}", { n: name })
+    return asJson(rec.get("fields"), [])
+  } catch (e) {
+    return []
+  }
+}
+
+// 订单要的参数由订单的品类决定；改造前的老订单没有品类，返回 undefined 让
+// renderSpecText 退回「全部启用字段」，历史订单的文本不变。
+function orderBindings(orderId) {
+  let catalog = ""
+  try {
+    catalog = $app.findRecordById("orders", orderId).getString("catalog")
+  } catch (e) {
+    catalog = ""
+  }
+  if (!catalog) return undefined
+  return catalogFields(catalog)
 }
 
 // ---------------------------------------------------------------- 计价
@@ -202,6 +259,8 @@ function itemConfig(itemId) {
       qty_mode: rec.getString("qty_mode") === "qty" ? "qty" : "check",
       unit: rec.getString("unit") || "",
       options: asJson(rec.get("options"), []),
+      // 一个品类一张订单，要量什么尺寸由品类说了算
+      catalog: rec.getString("catalog") || "衣服",
     }
   } catch (e) {
     return null
@@ -526,6 +585,7 @@ function setTerminalPrice(orderId, cents) {
 // POST /api/gg/orders
 // body: { measurement, contact_name, phone, address, items:[{item_id,name,qty,category}],
 //         remark, agent, terminal_price_cents }
+// 一单一品类：items 可以跨品类，服务端按品类拆成多张订单，共用一个 batch_no。
 function handleCreateOrder(c) {
   const customer = currentCustomer(c)
   if (!customer) return c.json(403, { message: "请先登录客户账号" })
@@ -562,21 +622,41 @@ function handleCreateOrder(c) {
     return c.json(400, { message: "该代理还没有分配价格，请联系管理员" })
   }
 
-  const orderCol = $app.findCollectionByNameOrId("orders")
-  const order = new Record(orderCol)
-  order.set("order_no", genOrderNo())
-  order.set("customer", customer.id)
-  order.set("measurement", measurementId)
-  order.set("agent", agent ? agent.id : "")
-  order.set("contact_name", body.contact_name || customer.getString("display_name") || "")
-  order.set("phone", body.phone || customer.getString("phone") || "")
-  order.set("address", body.address || "")
-  order.set("remark", remark.sanitizeRemark(body.remark))
-  order.set("status", "pending")
-  // 代理的客户先由代理核对，审核员直接下的单还是直接进审核
-  order.set("review_status", agent ? "agent_pending" : "pending")
-  order.set("is_deleted", false)
-  $app.save(order)
+  // 按品类分组：一个品类一张单，工厂指派、审核、导出都建立在一单一个品类上
+  const groups = []
+  const groupMap = {}
+  for (let i = 0; i < rawItems.length; i++) {
+    const raw = rawItems[i]
+    const cfg = itemConfig(raw.item_id || "")
+    if (!cfg) return c.json(400, { message: "项目不存在或已停用，请刷新后重新选择" })
+    const catalog = cfg.catalog || "衣服"
+    if (!groupMap[catalog]) {
+      groupMap[catalog] = { catalog: catalog, items: [] }
+      groups.push(groupMap[catalog])
+    }
+    groupMap[catalog].items.push(raw)
+  }
+
+  // 必填校验一次做完：缺哪些字段一次性返回，不让客户改一个报一个
+  const data = asJson(measurement.get("data"), {})
+  const missing = []
+  for (let i = 0; i < groups.length; i++) {
+    const bindings = catalogFields(groups[i].catalog)
+    for (let j = 0; j < bindings.length; j++) {
+      const b = bindings[j]
+      if (!b.required) continue
+      const v = data[b.key]
+      if (v !== null && v !== undefined && String(v).trim() !== "") continue
+      missing.push({ key: b.key, label: fieldLabel(b.key), catalog: groups[i].catalog })
+    }
+  }
+  if (missing.length) {
+    const names = []
+    for (let i = 0; i < missing.length; i++) {
+      if (names.indexOf(missing[i].label) < 0) names.push(missing[i].label)
+    }
+    return c.json(400, { message: "请先补填：" + names.join("、"), missing: missing })
+  }
 
   // 客户归属第一个给他下单的代理：之后不带链接进来，H5 的价格也按这个代理算
   if (agent && !relId(customer, "agent")) {
@@ -588,12 +668,58 @@ function handleCreateOrder(c) {
     }
   }
 
-  // 客户原始尺寸快照
-  const data = asJson(measurement.get("data"), {})
+  const batchNo = groups.length > 1 ? genBatchNo() : ""
+  const created = []
+  let first = null
+  for (let i = 0; i < groups.length; i++) {
+    const one = createOrderForGroup(
+      customer,
+      measurement,
+      data,
+      groups[i],
+      body,
+      agent,
+      batchNo,
+      // 跨品类拆单后「成交价」没有归属，只允许单品类订单带过来
+      groups.length === 1 ? body.terminal_price_cents : undefined
+    )
+    if (!first) first = one
+    created.push({ id: one.id, order_no: one.getString("order_no"), catalog: groups[i].catalog })
+  }
+
+  return c.json(200, {
+    id: first.id,
+    order_no: first.getString("order_no"),
+    batch_no: batchNo,
+    orders: created,
+  })
+}
+
+// 单张订单：品类内的一套项目 + 本单参数快照 + 价格
+function createOrderForGroup(customer, measurement, data, group, body, agent, batchNo, terminalCents) {
+  const orderCol = $app.findCollectionByNameOrId("orders")
+  const order = new Record(orderCol)
+  order.set("order_no", genOrderNo())
+  if (batchNo) order.set("batch_no", batchNo)
+  order.set("catalog", group.catalog)
+  order.set("customer", customer.id)
+  order.set("measurement", measurement.id)
+  order.set("agent", agent ? agent.id : "")
+  order.set("contact_name", body.contact_name || customer.getString("display_name") || "")
+  order.set("phone", body.phone || customer.getString("phone") || "")
+  order.set("address", body.address || "")
+  order.set("remark", remark.sanitizeRemark(body.remark))
+  order.set("status", "pending")
+  // 代理的客户先由代理核对，审核员直接下的单还是直接进审核
+  order.set("review_status", agent ? "agent_pending" : "pending")
+  order.set("is_deleted", false)
+  $app.save(order)
+
+  // 客户原始参数快照：data 存全量（尺码库共用一份档案），text 只渲染本单品类要的字段
   const spec = new Record($app.findCollectionByNameOrId("order_specs_customer"))
   spec.set("order", order.id)
   spec.set("data", data)
-  spec.set("text", renderSpecText(data))
+  spec.set("text", renderSpecText(data, catalogFields(group.catalog)))
   spec.set("fabric", measurement.getString("fabric"))
   spec.set("remark", measurement.getString("remark"))
   $app.save(spec)
@@ -601,13 +727,18 @@ function handleCreateOrder(c) {
   // 客户选择的项目（stage=customer）
   // 类型（勾选型/数量型）与单位在这里按项目当前配置固化，
   // 之后后台改配置只影响新订单。
-  saveOrderItems(order.id, "customer", rawItems, null)
+  saveOrderItems(order.id, "customer", group.items, null)
 
   recalcOrderPrices(order)
-  setTerminalPrice(order.id, body.terminal_price_cents)
-  writeLog(order.id, "", "create", { by: "customer", agent: agent ? agent.id : "" })
+  if (terminalCents !== undefined) setTerminalPrice(order.id, terminalCents)
+  writeLog(order.id, "", "create", {
+    by: "customer",
+    agent: agent ? agent.id : "",
+    catalog: group.catalog,
+    batch_no: batchNo,
+  })
 
-  return c.json(200, { id: order.id, order_no: order.getString("order_no") })
+  return order
 }
 
 // 兜底：通过 Records API 直接创建订单时也要有单号
@@ -639,6 +770,9 @@ function handleReview(c) {
   if (action !== "approved" && action !== "rejected" && action !== "return") {
     return c.json(400, { message: "action 只能是 approved、rejected 或 return" })
   }
+  // 改项目时不许跨品类，先拦在改状态之前，避免订单被改了一半
+  const catalogErr = checkSingleCatalog(asJson(body.items, []))
+  if (catalogErr) return c.json(400, { message: catalogErr })
 
   let order
   try {
@@ -699,7 +833,8 @@ function handleReview(c) {
   const prodData = asJson(body.data, null) || baseData
   prod.set("order", orderId)
   prod.set("data", prodData)
-  prod.set("text", renderSpecText(prodData))
+  // 生产单只印本单项目要的参数：共用尺码档案时，别把别的品类的旧值带给工厂
+  prod.set("text", renderSpecText(prodData, orderBindings(orderId)))
   prod.set("production_remark", body.production_remark || "")
   prod.set("reject_reason", "")
   $app.save(prod)
@@ -777,6 +912,8 @@ function handleAgentConfirmInner(c) {
 
   const rawItems = asJson(body.items, [])
   if (!rawItems.length) return c.json(400, { message: "请至少保留一个项目" })
+  const catalogErr = checkSingleCatalog(rawItems)
+  if (catalogErr) return c.json(400, { message: catalogErr })
 
   // 客户原始尺寸保持不动，代理调整单独存 agent_data，审核员才有对比依据
   const agentData = asJson(body.data, null)
@@ -790,7 +927,7 @@ function handleAgentConfirmInner(c) {
     if (!spec) spec = new Record($app.findCollectionByNameOrId("order_specs_customer"))
     spec.set("order", orderId)
     spec.set("agent_data", agentData)
-    spec.set("agent_text", renderSpecText(agentData))
+    spec.set("agent_text", renderSpecText(agentData, orderBindings(orderId)))
     $app.save(spec)
   }
 
@@ -837,10 +974,14 @@ function handleScore(c) {
     return c.json(400, { message: "分数必须在 1-10 之间" })
   }
 
+  let order
   try {
-    $app.findRecordById("orders", orderId)
+    order = $app.findRecordById("orders", orderId)
   } catch (e) {
     return c.json(404, { message: "订单不存在" })
+  }
+  if (order.getString("status") !== "done") {
+    return c.json(400, { message: "订单完成后才能打分" })
   }
 
   const rec = new Record($app.findCollectionByNameOrId("order_reviews"))
@@ -1090,9 +1231,29 @@ function handleItemPrices(c) {
       // 0 / 没配 = 跟随总部排序
       sort: own && own.sort ? own.sort : it.getInt("sort"),
       icon: icon,
+      // 品类：H5 拿它分 tab；要填什么尺寸看 catalogs.fields，项目上不再声明
+      catalog: it.getString("catalog") || "衣服",
     }
   }
-  return c.json(200, { prices: prices, items: items })
+  // 品类字典：H5 首页与下单页 tab 的顺序、以及哪些品类还在卖，都以这里为准。
+  // 字典里停用的品类，项目即使还挂着它也进不了 H5。
+  const catalogs = []
+  const catRows = $app.findAllRecords("catalogs")
+  for (let i = 0; i < catRows.length; i++) {
+    const c = catRows[i]
+    if (!c.getBool("is_active")) continue
+    // fields 下发给 H5：下单页按品类渲染尺寸表单、算必填
+    catalogs.push({
+      name: c.getString("name"),
+      sort: c.getInt("sort"),
+      fields: asJson(c.get("fields"), []),
+    })
+  }
+  catalogs.sort(function (a, b) {
+    return a.sort - b.sort
+  })
+
+  return c.json(200, { prices: prices, items: items, catalogs: catalogs })
 }
 
 // POST /api/gg/orders-assign-factory

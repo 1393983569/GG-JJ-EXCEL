@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { View, Text, Input, Image } from '@tarojs/components'
-import Taro, { useRouter } from '@tarojs/taro'
-import { pb, yuan, type Item, type Measurement } from '../../api/pb'
-import { rememberAgent, clearAgentCode } from '../../api/agent'
+import Taro, { useRouter, useDidShow } from '@tarojs/taro'
+import { pb, yuan, type Catalog, type Item, type MeasureField, type Measurement } from '../../api/pb'
+import { rememberAgent, clearAgentCode, withAgent } from '../../api/agent'
 import RemarkEditor from '../../components/RemarkEditor'
 
 const CATEGORY_ORDER: Record<string, number> = { base: 0, main: 1, extra: 2 }
@@ -28,6 +28,31 @@ export default function Order() {
   const [agentCode, setAgentCode] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [ready, setReady] = useState(false)
+
+  // 当前品类：一单一品类，勾了多个品类时提交会拆成多张单
+  const [tab, setTab] = useState('')
+  // 参数字典：项目只存字段 key，标签/单位/选项都从这里取
+  const [fieldDefs, setFieldDefs] = useState<MeasureField[]>([])
+  // 品类字典：顺序、停用，以及每个品类固定要量的尺寸
+  const [catalogDefs, setCatalogDefs] = useState<Catalog[]>([])
+  // 本单必填、档案里却没值的参数，就地补填写回档案
+  const [fill, setFill] = useState<Record<string, string>>({})
+
+  // 从「查看/修改尺寸」返回时只刷新档案，别把已勾的项目和收货信息清掉
+  const refreshMeasurements = async () => {
+    const user: any = pb.authStore.record
+    if (!user) return
+    try {
+      const ms = await pb.collection('measurements').getFullList<Measurement>({
+        filter: `customer = "${user.id}"`,
+        sort: '-updated',
+      })
+      setMeasurements(ms)
+    } catch (e) {}
+  }
+  useDidShow(() => {
+    refreshMeasurements()
+  })
 
   useEffect(() => {
     const user: any = pb.authStore.record
@@ -61,7 +86,7 @@ export default function Order() {
 
   const load = async (uid: string) => {
     try {
-      const [ms, its, priceRes, token] = await Promise.all([
+      const [ms, its, priceRes, token, fs] = await Promise.all([
         pb.collection('measurements').getFullList<Measurement>({
           filter: `customer = "${uid}"`,
           sort: '-updated',
@@ -70,15 +95,25 @@ export default function Order() {
         // 价格由服务端定：客户所属代理的自定价 > 全局客户价，前端不再自己拼
         pb.send(`/api/gg/items/prices?agent=${encodeURIComponent(rememberAgent())}`, {}),
         pb.files.getToken().catch(() => ''),
+        pb.collection('measure_fields').getFullList<MeasureField>({ sort: 'sort' }),
       ])
       setMeasurements(ms)
       setFileToken(token)
+      setFieldDefs(fs.filter((f) => f.is_active !== false))
       const p = router.params.measurement
       if (p) setMid(p)
       else if (ms.length) setMid(ms[0].id)
 
       const res: any = priceRes || {}
       setPriceMap(res.prices || {})
+
+      // 品类字典：顺序与「还在卖」以服务端为准，停用的品类连同其项目一起不显示
+      const dict: Catalog[] = Array.isArray(res.catalogs) ? res.catalogs : []
+      const catNames: string[] = []
+      dict.forEach((c) => {
+        if (c && c.name && catNames.indexOf(c.name) < 0) catNames.push(c.name)
+      })
+      setCatalogDefs(dict)
 
       // 服务端已经算好这个客户该看到的值：代理设置 > 总部设置 > 项目原名
       const conf: Record<string, any> = res.items || {}
@@ -96,14 +131,32 @@ export default function Order() {
             icon: c.icon || '',
           }
         })
-        .filter((it) => it.h5_visible !== false)
+        .filter(
+          (it) =>
+            it.h5_visible !== false &&
+            (catNames.length === 0 || catNames.indexOf(it.catalog || '衣服') >= 0)
+        )
         .sort((a, b) => (a.sort || 0) - (b.sort || 0))
       setItems(merged)
 
-      // 默认勾选按项目配置走；基础价始终算 1 份，否则基础价就没了
+      // 品类 tab：链接里指定了就用它，否则落在第一个品类上
+      const cats = catNames.length ? catNames.slice() : []
+      if (!cats.length) {
+        merged.forEach((it) => {
+          const c = it.catalog || '衣服'
+          if (cats.indexOf(c) < 0) cats.push(c)
+        })
+      }
+      const want = String(router.params.catalog || '')
+      const landing = cats.indexOf(want) >= 0 ? want : cats[0] || ''
+      setTab(landing)
+
+      // 默认勾选只作用于进来的那个品类：否则进衣服页会顺带把床垫的默认项也带上，
+      // 提交时凭空多出一张床垫单。基础价由 pickedList 按品类自动跟随。
       const init: Record<string, number> = {}
       merged.forEach((it) => {
-        init[it.id] = it.category === 'base' || it.h5_default ? 1 : 0
+        const c = it.catalog || '衣服'
+        init[it.id] = c === landing && (it.category === 'base' || it.h5_default) ? 1 : 0
       })
       setQty(init)
       setReady(true)
@@ -113,27 +166,110 @@ export default function Order() {
     }
   }
 
+  // 结算清单：勾了哪个品类的项目，就自动带上那个品类的基础价。
+  // 基础价是「打版费」性质，按品类各算一份，客户不用手动勾。
+  const pickedList = useMemo(() => {
+    const nonBase = items.filter((it) => it.category !== 'base' && (qty[it.id] || 0) > 0)
+    const cats: string[] = []
+    nonBase.forEach((it) => {
+      const c = it.catalog || '衣服'
+      if (cats.indexOf(c) < 0) cats.push(c)
+    })
+    const base = items.filter((it) => {
+      if (it.category !== 'base') return false
+      const c = it.catalog || '衣服'
+      return cats.length ? cats.indexOf(c) >= 0 : c === tab
+    })
+    return nonBase.concat(base)
+  }, [items, qty, tab])
+
   const total = useMemo(() => {
     // 不计入合计的项目照样下单，只是不参与这里的累加（服务端客户版价格同样按 0 算）
-    const free: Record<string, boolean> = {}
-    items.forEach((it) => {
-      if (it.in_price === false) free[it.id] = true
-    })
-    return Object.keys(qty).reduce(
-      (sum, id) => (free[id] ? sum : sum + (priceMap[id] || 0) * (qty[id] || 0)),
+    return pickedList.reduce(
+      (sum, it) =>
+        it.in_price === false ? sum : sum + (priceMap[it.id] || 0) * Math.max(1, qty[it.id] || 1),
       0
     )
-  }, [qty, priceMap, items])
+  }, [pickedList, qty, priceMap])
+
+  // 品类 tab：顺序听品类字典的；勾选状态跨品类共用，切 tab 不会丢已选的项目
+  const catalogs = useMemo(() => {
+    if (catalogDefs.length) return catalogDefs.map((c) => c.name)
+    const list: string[] = []
+    items.forEach((it) => {
+      const c = it.catalog || '衣服'
+      if (list.indexOf(c) < 0) list.push(c)
+    })
+    return list
+  }, [catalogDefs, items])
+
+  // 品类 → 固定尺寸集：品类下所有项目共用这一套
+  const catFieldMap = useMemo(() => {
+    const m: Record<string, Catalog['fields']> = {}
+    catalogDefs.forEach((c) => {
+      m[c.name] = c.fields || []
+    })
+    return m
+  }, [catalogDefs])
+
+  const visible = useMemo(
+    () => items.filter((it) => (it.catalog || '衣服') === tab),
+    [items, tab]
+  )
+
+  const fieldMap = useMemo(() => {
+    const m: Record<string, MeasureField> = {}
+    fieldDefs.forEach((f) => {
+      m[f.key] = f
+    })
+    return m
+  }, [fieldDefs])
+
+  // 档案卡片上只看本品类要量的尺寸，别让买袜子的客户盯着胸围
+  const previewKeys = useMemo(() => {
+    const keys: string[] = []
+    ;(catFieldMap[tab] || []).forEach((b) => {
+      if (keys.length >= 3) return
+      if (fieldMap[b.key] && keys.indexOf(b.key) < 0) keys.push(b.key)
+    })
+    return keys
+  }, [catFieldMap, tab, fieldMap])
 
   const grouped = useMemo(() => {
     const map: Record<string, Item[]> = {}
-    items.forEach((it) => {
+    visible.forEach((it) => {
       ;(map[it.category] ||= []).push(it)
     })
     return Object.keys(map)
       .sort((a, b) => (CATEGORY_ORDER[a] ?? 9) - (CATEGORY_ORDER[b] ?? 9))
       .map((k) => ({ key: k, name: CATEGORY_NAME[k] || k, list: map[k] }))
-  }, [items])
+  }, [visible])
+
+  const current = measurements.find((m) => m.id === mid) || null
+
+  // 本单必填：按结算清单里涉及的品类取各自的必填尺寸（拆单后每单校验自己那套）
+  const missingKeys = useMemo(() => {
+    const keys: string[] = []
+    pickedList.forEach((it) => {
+      ;(catFieldMap[it.catalog || '衣服'] || []).forEach((b) => {
+        if (!b.required || !fieldMap[b.key]) return
+        if (keys.indexOf(b.key) >= 0) return
+        const own = fill[b.key] !== undefined ? fill[b.key] : current?.data?.[b.key]
+        if (own === null || own === undefined || String(own).trim() === '') keys.push(b.key)
+      })
+    })
+    return keys
+  }, [pickedList, catFieldMap, fill, current, fieldMap])
+
+  // 显示用：缺失的 + 已经动手填过的。只按「缺失」渲染会让输入框在敲下第一个
+  // 字符后当场消失，客户没法把数字打完。
+  const fillKeys = useMemo(() => {
+    const keys = missingKeys.slice()
+    Object.keys(fill).forEach((k) => {
+      if (fieldMap[k] && keys.indexOf(k) < 0) keys.push(k)
+    })
+    return keys
+  }, [missingKeys, fill, fieldMap])
 
   // 勾选 / 取消：勾选型直接 1 份；数量型选中后默认 1，可再调整
   const toggleItem = (it: Item) => {
@@ -177,11 +313,16 @@ export default function Order() {
     if (!address.trim()) return Taro.showToast({ title: '请填写收货地址', icon: 'none' })
 
     // 按项目顺序提交：类型与单位由服务端按下单时的配置固化
-    const picked = items.filter((it) => (qty[it.id] || 0) > 0)
+    const picked = pickedList
     if (!picked.length) return Taro.showToast({ title: '请至少选择一个项目', icon: 'none' })
     // 后台配了规格的项目必须先选一个（服务端也会校验）
     const missing = picked.find((it) => it.options?.length && !specs[it.id])
     if (missing) return Taro.showToast({ title: `请选择「${missing.name}」的规格`, icon: 'none' })
+    // 本单必填的定制参数缺了就补齐，别等后端退回来
+    if (missingKeys.length) {
+      const names = missingKeys.map((k) => fieldMap[k]?.label || k).join('、')
+      return Taro.showToast({ title: `请先补填：${names}`, icon: 'none' })
+    }
 
     const snapshot = picked.map((it) => {
       const isQty = it.qty_mode === 'qty'
@@ -198,8 +339,19 @@ export default function Order() {
 
     setSubmitting(true)
     try {
-      // 走服务端路由：由后端拆分成「客户原始尺寸 / 项目」，并计算价格
-      await pb.send('/api/gg/orders', {
+      // 补填的值写回档案：尺码库全品类共用一份，下次下单直接复用
+      const fillKeys = Object.keys(fill)
+      if (fillKeys.length) {
+        const merged: Record<string, any> = { ...(current?.data || {}) }
+        fillKeys.forEach((k) => {
+          const f = fieldMap[k]
+          merged[k] = f && f.type === 'number' ? Number(fill[k]) : fill[k]
+        })
+        await pb.collection('measurements').update(mid, { data: merged })
+      }
+
+      // 走服务端路由：由后端按品类拆单、拆「客户原始尺寸 / 项目」，并计算价格
+      const res: any = await pb.send('/api/gg/orders', {
         method: 'POST',
         body: {
           measurement: mid,
@@ -211,7 +363,11 @@ export default function Order() {
           agent: agentCode,
         },
       })
-      Taro.showToast({ title: '下单成功', icon: 'success' })
+      const count = (res?.orders || []).length
+      Taro.showToast({
+        title: count > 1 ? `已拆成 ${count} 张订单` : '下单成功',
+        icon: 'success',
+      })
       setTimeout(() => Taro.redirectTo({ url: '/pages/orders/index' }), 800)
     } catch (e: any) {
       Taro.showToast({ title: e?.message || '下单失败', icon: 'none' })
@@ -259,42 +415,25 @@ export default function Order() {
         {agentCode ? <Text className="muted">本单由专属代理服务</Text> : null}
       </View>
 
-      <View className="card">
-        <View className="card-title">选择尺码</View>
-        {measurements.length === 0 && (
-          <View>
-            <Text className="muted">还没有量体数据</Text>
-            <View
-              className="btn-ghost"
-              style={{ marginTop: 16 }}
-              onClick={() => Taro.navigateTo({ url: '/pages/measure/index' })}
-            >
-              去填写量体
-            </View>
+      {catalogs.length > 1 && (
+        <View className="card">
+          <View className="card-title">定制品类</View>
+          <View className="spec-row">
+            {catalogs.map((c) => (
+              <View
+                key={c}
+                className={'spec-chip' + (tab === c ? ' spec-chip-on' : '')}
+                onClick={() => setTab(c)}
+              >
+                {c}
+              </View>
+            ))}
           </View>
-        )}
-        {measurements.map((m) => (
-          <View
-            key={m.id}
-            style={{
-              padding: 20,
-              borderRadius: 12,
-              border: mid === m.id ? '2px solid #1677ff' : '1px solid #eee',
-              marginBottom: 14,
-              background: mid === m.id ? '#f0f7ff' : '#fff',
-            }}
-            onClick={() => setMid(m.id)}
-          >
-            <View className="row">
-              <Text style={{ fontWeight: 600 }}>{m.code}</Text>
-              <Text className="muted">{m.name}</Text>
-            </View>
-            <View className="muted" style={{ marginTop: 6 }}>
-              身高 {m.data?.height || '-'} / 胸围 {m.data?.chest || '-'} / 腰围 {m.data?.waist || '-'}
-            </View>
-          </View>
-        ))}
-      </View>
+          <Text className="muted">
+            不同品类分开成单，切过去勾选的项目会一起提交并自动拆单
+          </Text>
+        </View>
+      )}
 
       {grouped.map((g) => (
         <View className="card" key={g.key}>
@@ -400,6 +539,97 @@ export default function Order() {
           )}
         </View>
       ))}
+
+      <View className="card">
+        <View className="card-title">填写尺寸</View>
+        {measurements.length === 0 && (
+          <View>
+            <Text className="muted">还没有尺寸档案，先填一份</Text>
+          </View>
+        )}
+        {measurements.map((m) => (
+          <View
+            key={m.id}
+            style={{
+              padding: 20,
+              borderRadius: 12,
+              border: mid === m.id ? '2px solid #1677ff' : '1px solid #eee',
+              marginBottom: 14,
+              background: mid === m.id ? '#f0f7ff' : '#fff',
+            }}
+            onClick={() => {
+              setMid(m.id)
+              // 换档案就把没保存的补填清掉，别串到别人/别的档案上
+              setFill({})
+            }}
+          >
+            <View className="row">
+              <Text style={{ fontWeight: 600 }}>{m.code}</Text>
+              <View style={{ display: 'flex', alignItems: 'center' }}>
+                <Text className="muted" style={{ marginRight: 10 }}>
+                  {m.name}
+                </Text>
+                <View
+                  style={{
+                    color: '#1677ff',
+                    fontSize: 22,
+                    border: '1px solid #1677ff',
+                    borderRadius: 6,
+                    padding: '4px 12px',
+                  }}
+                  onClick={(e: any) => {
+                    e.stopPropagation()
+                    setMid(m.id)
+                    setFill({})
+                    Taro.navigateTo({ url: withAgent(`/pages/measure/index?edit=${m.id}`) })
+                  }}
+                >
+                  查看
+                </View>
+              </View>
+            </View>
+            <View className="muted" style={{ marginTop: 6 }}>
+              {previewKeys.length
+                ? previewKeys.map((k) => `${fieldMap[k].label} ${m.data?.[k] || '-'}`).join(' / ')
+                : '这个品类不用量尺寸'}
+            </View>
+          </View>
+        ))}
+        <View
+          className="btn-ghost"
+          style={{ marginTop: 8 }}
+          onClick={() =>
+            Taro.navigateTo({ url: `/pages/measure/index?catalog=${encodeURIComponent(tab)}` })
+          }
+        >
+          填写新尺寸
+        </View>
+      </View>
+
+      {fillKeys.length > 0 && (
+        <View className="card">
+          <View className="card-title">补填缺失尺寸</View>
+          {fillKeys.map((k) => {
+            const f = fieldMap[k]
+            return (
+              <View className="field-row" key={k}>
+                <Text className="field-label">
+                  {f.label}
+                  {f.unit ? `(${f.unit})` : ''}
+                </Text>
+                <Input
+                  className="input"
+                  type={f.type === 'number' ? 'digit' : 'text'}
+                  value={fill[k] || ''}
+                  placeholder="必填"
+                  onInput={(e) => setFill((prev) => ({ ...prev, [k]: e.detail.value }))}
+                />
+              </View>
+            )
+          })}
+          <Text className="muted">填一次就存进你的尺寸档案，下次不用再填</Text>
+        </View>
+      )}
 
       <View className="card">
         <View className="card-title">备注</View>

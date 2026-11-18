@@ -30,6 +30,12 @@ body {
   font-family: ui-monospace, Menlo, Consolas, monospace;
 }
 
+/* 关闭的订单仍然留在列表里，但整行置灰，别让人误以为还要生产 */
+.order-closed-row td {
+  background: #fafafa !important;
+  color: #bbb !important;
+}
+
 .measure-text {
   line-height: 1.9;
   color: #333;
@@ -49,4 +55,151 @@ body {
   max-height: 320px;
   object-fit: contain;
   margin: 6px 0;
+}
+
+/* 登录页：分栏卡片 + ASCII 艺术图 */
+.login-shell {
+  position: relative;
+  min-height: 100vh;
+  padding: 26px 20px 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  overflow: hidden;
+  background: linear-gradient(135deg, #dbeafe 0%, #eef2f7 45%, #fef3c7 100%);
+}
+
+.login-shell::before {
+  content: '';
+  position: absolute;
+  inset: -25%;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 72% 12%, rgba(249, 115, 22, 0.85), transparent 40%),
+    radial-gradient(circle at 18% 78%, rgba(59, 130, 246, 0.55), transparent 46%),
+    radial-gradient(circle at 88% 82%, rgba(245, 158, 11, 0.45), transparent 38%);
+  filter: blur(64px);
+}
+
+.login-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+.login-card {
+  width: min(920px, 100%);
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  background: #fff;
+  border-radius: 28px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+}
+
+.login-art-pane {
+  position: relative;
+  min-height: 520px;
+  padding: 10px;
+  border-radius: 20px;
+  background: #f7f9f2;
+}
+
+.login-art-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 500px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #f8faf2;
+}
+
+.login-art-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.login-art-caption {
+  position: absolute;
+  z-index: 2;
+  left: 26px;
+  bottom: 22px;
+  pointer-events: none;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 28px;
+  line-height: 1.12;
+  color: #1f2d16;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.login-art-caption em {
+  font-weight: 400;
+}
+
+.login-form-pane {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 42px;
+}
+
+.login-form-inner {
+  width: 100%;
+  max-width: 320px;
+}
+
+.login-title {
+  margin: 0 0 6px;
+  font-size: 28px;
+  font-weight: 600;
+  color: #1f2430;
+}
+
+.login-badge {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: #1677ff;
+  color: #fff;
+  font-size: 14px;
+  vertical-align: middle;
+}
+
+.login-subtitle {
+  margin: 0 0 26px;
+  color: #8c93a1;
+  font-size: 13px;
+}
+
+.login-submit {
+  margin-top: 6px;
+  border-radius: 10px;
+  height: 42px;
+  font-weight: 600;
+}
+
+@media (max-width: 900px) {
+  .login-card {
+    grid-template-columns: 1fr;
+  }
+
+  .login-art-pane {
+    min-height: 360px;
+  }
+
+  .login-art-frame {
+    min-height: 340px;
+  }
+
+  .login-form-pane {
+    padding: 32px 24px;
+  }
 }

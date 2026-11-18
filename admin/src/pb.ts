@@ -61,6 +61,10 @@ export type PriceLine = {
 export type Order = {
   id: string
   order_no: string
+  /** 一单一品类：下单时按项目冗余 */
+  catalog?: string
+  /** 一次结算拆成多张单时共用 */
+  batch_no?: string
   customer?: string
   agent?: string
   /** 审核指派的工厂账号 */
@@ -94,12 +98,23 @@ export type Measurement = {
   updated: string
 }
 
+/** 项目绑定的定制参数：key 指向 measure_fields.key */
+export type ItemField = {
+  key: string
+  required?: boolean
+  sort?: number
+  /** 品类维度：这个尺寸是否进 Word 导出 */
+  in_export?: boolean
+}
+
 export type Item = {
   id: string
   name: string
   category: 'base' | 'main' | 'extra'
   sort: number
   is_active: boolean
+  /** 品类：衣服 / 床垫 / 袜子…，空按衣服算；一单一品类，要量的尺寸看品类 */
+  catalog?: string
   /** check 勾选型（无数量）/ qty 数量型（可选数量，需配单位） */
   qty_mode?: 'check' | 'qty'
   /** 数量型单位：对 / 双 / 个 */
@@ -112,6 +127,8 @@ export type Item = {
   h5_default?: boolean
   /** 是否计入价格：false 时客户版价格按 0 算，项目照常下单 */
   in_price?: boolean
+  /** 是否进 Word 导出；按 items.catalog 自动区分品类 */
+  in_export?: boolean
   /** H5 展示名：没有代理归属的直客看到的名字，留空就显示项目名 */
   alias?: string
   /** 假删除标记：置 true 后不再出现在项目列表，历史订单保留 */
@@ -122,6 +139,16 @@ export type Item = {
   /** PocketBase 记录自带字段，拼文件 URL 时需要 */
   collectionId?: string
   collectionName?: string
+}
+
+/** 品类字典：项目只能挂在这里面已有的品类上 */
+export type Catalog = {
+  id: string
+  name: string
+  sort: number
+  is_active?: boolean
+  /** 这个品类（打版方案）固定要量的尺寸 */
+  fields?: ItemField[]
 }
 
 export type MeasureField = {

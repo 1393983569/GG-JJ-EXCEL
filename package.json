@@ -4,6 +4,6 @@
   "private": true,
   "description": "定制紧身衣订单系统 - PocketBase 后端",
   "scripts": {
-    "test": "node tests/pricing.test.js"
+    "test": "node tests/pricing.test.js && node tests/remark.test.js && node tests/fields.test.js"
   }
 }
