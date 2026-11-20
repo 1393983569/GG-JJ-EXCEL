@@ -25,10 +25,10 @@ tests/           计价与渲染的单元测试
 3. 启动服务（会自动执行 `pb_migrations` 建表并写入初始数据）：
 
 ```bash
-./pocketbase serve --http=0.0.0.0:8090
+./pocketbase serve --http=0.0.0.0:4399
 ```
 
-4. 打开 `http://127.0.0.1:8090/_/` 进入后台。
+4. 打开 `http://127.0.0.1:4399/_/` 进入后台。
 
 ## 已内置的初始数据
 
@@ -116,7 +116,7 @@ npm run build:h5   # 构建，输出到 h5/dist
 
 ### 首个后台账号
 
-PocketBase 启动后，进入 `http://127.0.0.1:8090/_/`，在 `staff` 集合里新建一条记录：
+PocketBase 启动后，进入 `http://127.0.0.1:4399/_/`，在 `staff` 集合里新建一条记录：
 
 - `username`：登录名
 - `password`：密码

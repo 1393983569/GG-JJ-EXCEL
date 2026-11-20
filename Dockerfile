@@ -11,7 +11,7 @@ RUN apk add --no-cache curl unzip ca-certificates tzdata \
  && rm /tmp/pb.zip
 
 WORKDIR /pb
-EXPOSE 8090
+EXPOSE 4399
 
 ENTRYPOINT ["pocketbase"]
-CMD ["serve", "--http=0.0.0.0:8090"]
+CMD ["serve", "--http=0.0.0.0:4399"]

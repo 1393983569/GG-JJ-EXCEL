@@ -2,7 +2,7 @@
 admin.example.com {
 	@pb path /api/* /_/*
 	handle @pb {
-		reverse_proxy pb:8090
+		reverse_proxy pb:4399
 	}
 	handle {
 		root * /srv/admin

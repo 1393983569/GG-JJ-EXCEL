@@ -14,7 +14,7 @@ function sameOrigin(): string {
  * 后端地址解析，顺序：
  * 1. .env 里的 TARO_APP_PB_URL；
  * 2. 没配置（或配置成空）时走同源，适用于和 PocketBase 部署在同一域名的情况；
- * 3. 最后退回本机 8090（仅 `npm run dev:h5` + `pocketbase serve` 的默认组合可用）。
+ * 3. 最后退回本机 4399（仅 `npm run dev:h5` + `pocketbase serve` 的默认组合可用）。
  *
  * 手机通过局域网 IP 打开 H5 时，配置里的 127.0.0.1 指的是手机自己，
  * 这里统一换成当前访问的主机名，避免请求发不出去。
@@ -23,7 +23,7 @@ function resolveBase(): string {
   const env = String(process.env.TARO_APP_PB_URL || '')
     .trim()
     .replace(/\/+$/, '')
-  if (!env) return sameOrigin() || 'http://127.0.0.1:8090'
+  if (!env) return sameOrigin() || 'http://127.0.0.1:4399'
 
   const host = typeof location !== 'undefined' ? location.hostname : ''
   if (!host || host === 'localhost' || host === '127.0.0.1') return env
