@@ -12,6 +12,14 @@ admin.example.com {
 }
 
 m.example.com {
-	root * /srv/h5
-	file_server
+	# H5 的 TARO_APP_PB_URL 留空 = 走同源，所以这里必须把 /api、/_ 转发给 PocketBase
+	@pb path /api/* /_/*
+	handle @pb {
+		reverse_proxy pb:4399
+	}
+	handle {
+		root * /srv/h5
+		try_files {path} /index.html
+		file_server
+	}
 }
