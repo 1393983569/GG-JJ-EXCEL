@@ -1,0 +1,17 @@
+# 改这两处域名即可，其余不用动
+admin.example.com {
+	@pb path /api/* /_/*
+	handle @pb {
+		reverse_proxy pb:8090
+	}
+	handle {
+		root * /srv/admin
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+m.example.com {
+	root * /srv/h5
+	file_server
+}
