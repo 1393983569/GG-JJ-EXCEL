@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { View, Text, Input, Image } from '@tarojs/components'
 import Taro, { useRouter, useDidShow } from '@tarojs/taro'
-import { pb, yuan, type Catalog, type Item, type MeasureField, type Measurement } from '../../api/pb'
+import { pb, yuan, dateHint, type Catalog, type Item, type MeasureField, type Measurement } from '../../api/pb'
 import { rememberAgent, clearAgentCode, withAgent } from '../../api/agent'
 import RemarkEditor from '../../components/RemarkEditor'
 
@@ -44,10 +44,12 @@ export default function Order() {
     if (!user) return
     try {
       const ms = await pb.collection('measurements').getFullList<Measurement>({
-        filter: `customer = "${user.id}"`,
+        filter: `customer = "${user.id}" && is_deleted != true`,
         sort: '-updated',
       })
       setMeasurements(ms)
+      // 选中的档案被删了就自动换一份，别拿已删除的档案下单
+      setMid((cur) => (ms.some((m) => m.id === cur) ? cur : ms.length ? ms[0].id : ''))
     } catch (e) {}
   }
   useDidShow(() => {
@@ -88,7 +90,7 @@ export default function Order() {
     try {
       const [ms, its, priceRes, token, fs] = await Promise.all([
         pb.collection('measurements').getFullList<Measurement>({
-          filter: `customer = "${uid}"`,
+          filter: `customer = "${uid}" && is_deleted != true`,
           sort: '-updated',
         }),
         pb.collection('items').getFullList<Item>({ filter: 'is_active = true', sort: 'sort' }),
@@ -542,6 +544,9 @@ export default function Order() {
 
       <View className="card">
         <View className="card-title">填写尺寸</View>
+        <View className="muted" style={{ marginBottom: 14 }}>
+          选择本单按哪份尺寸制作，尺寸有变化可点「查看」修改
+        </View>
         {measurements.length === 0 && (
           <View>
             <Text className="muted">还没有尺寸档案，先填一份</Text>
@@ -587,6 +592,9 @@ export default function Order() {
                   查看
                 </View>
               </View>
+            </View>
+            <View className="muted" style={{ marginTop: 4, fontSize: 22 }}>
+              {dateHint(m)}
             </View>
             <View className="muted" style={{ marginTop: 6 }}>
               {previewKeys.length

@@ -3,6 +3,7 @@ import { View, Input, Picker, Text } from '@tarojs/components'
 import Taro, { useRouter } from '@tarojs/taro'
 import {
   pb,
+  dateHint,
   type Catalog,
   type MeasureField,
   type MeasureGroup,
@@ -29,9 +30,7 @@ export default function Measure() {
   const [saving, setSaving] = useState(false)
 
   const [historyOpen, setHistoryOpen] = useState(router.params.history === '1')
-  const [suffix, setSuffix] = useState('')
   const [history, setHistory] = useState<Measurement[]>([])
-  const [loadingHistory, setLoadingHistory] = useState(false)
 
   useEffect(() => {
     const user: any = pb.authStore.record
@@ -40,6 +39,7 @@ export default function Measure() {
       setName(user.display_name || '')
     }
     loadFields()
+    loadHistory()
     if (editId) loadEdit()
   }, [])
 
@@ -111,25 +111,45 @@ export default function Measure() {
     setData((prev) => ({ ...prev, [key]: value }))
   }
 
-  const queryHistory = async () => {
-    if (!/^\d{4}$/.test(suffix)) {
-      Taro.showToast({ title: '请输入订单号后四位', icon: 'none' })
-      return
-    }
-    setLoadingHistory(true)
+  // 历史尺码 = 自己填过的档案，直接列出来，不用再输手机号 + 订单号去反查
+  const loadHistory = async () => {
+    const user: any = pb.authStore.record
+    if (!user) return
     try {
-      const res = await pb.send('/api/gg/measure/lookup', {
-        method: 'GET',
-        query: { phone, suffix },
+      const ms = await pb.collection('measurements').getFullList<Measurement>({
+        filter: `customer = "${user.id}" && is_deleted != true`,
+        sort: '-updated',
       })
-      const items = (res && res.items) || []
-      setHistory(items)
-      if (!items.length) Taro.showToast({ title: '没有找到历史尺码', icon: 'none' })
+      setHistory(ms)
+    } catch (e) {}
+  }
+
+  const previewOf = (m: Measurement) => {
+    const keys = Object.keys(m.data || {}).slice(0, 3)
+    if (!keys.length) return '没有填尺寸'
+    return keys
+      .map((k) => {
+        const f = fields.find((x) => x.key === k)
+        return `${f ? f.label : k} ${m.data[k]}`
+      })
+      .join(' / ')
+  }
+
+  const removeHistory = async (m: Measurement) => {
+    const res: any = await Taro.showModal({
+      title: '删除这份尺码？',
+      content: '删除后不再出现在历史尺码里，已经下单的订单不受影响',
+      confirmText: '删除',
+      confirmColor: '#e5484d',
+    })
+    if (!res.confirm) return
+    try {
+      // 假删除：订单还引用着这条档案，真删会让订单关系断链
+      await pb.collection('measurements').update(m.id, { is_deleted: true })
+      setHistory((prev) => prev.filter((x) => x.id !== m.id))
+      Taro.showToast({ title: '已删除', icon: 'success' })
     } catch (e: any) {
-      Taro.showToast({ title: e?.message || '查询失败', icon: 'none' })
-      setHistory([])
-    } finally {
-      setLoadingHistory(false)
+      Taro.showToast({ title: e?.message || '删除失败', icon: 'none' })
     }
   }
 
@@ -247,30 +267,9 @@ export default function Measure() {
 
         {!editId && historyOpen && (
           <View style={{ background: '#f7f8fa', borderRadius: 12, padding: 20, marginBottom: 24 }}>
-            <Text className="label">手机号 + 订单号后四位</Text>
-            <View className="field-row">
-              <Input
-                className="input"
-                type="number"
-                maxlength={11}
-                value={phone}
-                placeholder="手机号"
-                onInput={(e) => setPhone(e.detail.value)}
-              />
-            </View>
-            <View className="field-row">
-              <Input
-                className="input"
-                type="number"
-                maxlength={4}
-                value={suffix}
-                placeholder="订单号后四位"
-                onInput={(e) => setSuffix(e.detail.value)}
-              />
-            </View>
-            <View className="btn-ghost" onClick={loadingHistory ? undefined : queryHistory}>
-              {loadingHistory ? '查询中…' : '查询历史尺码'}
-            </View>
+            {history.length === 0 && (
+              <Text className="muted">还没有填过尺码，下面填好保存就会出现在这里</Text>
+            )}
             {history.map((m) => (
               <View
                 key={m.id}
@@ -285,14 +284,40 @@ export default function Measure() {
               >
                 <View className="row">
                   <Text style={{ fontWeight: 600 }}>{m.code}</Text>
-                  <Text className="muted">{m.name}</Text>
+                  <View style={{ display: 'flex', alignItems: 'center' }}>
+                    <Text className="muted" style={{ marginRight: 16 }}>
+                      {m.name}
+                    </Text>
+                    <View
+                      style={{
+                        color: '#e5484d',
+                        fontSize: 24,
+                        border: '1px solid #e5484d',
+                        borderRadius: 6,
+                        padding: '4px 12px',
+                      }}
+                      onClick={(e: any) => {
+                        e.stopPropagation()
+                        removeHistory(m)
+                      }}
+                    >
+                      删除
+                    </View>
+                  </View>
                 </View>
-                <View className="muted" style={{ marginTop: 8 }}>
-                  身高 {m.data?.height || '-'} / 胸围 {m.data?.chest || '-'} / 腰围{' '}
-                  {m.data?.waist || '-'}
+                <View className="muted" style={{ marginTop: 4, fontSize: 22 }}>
+                  {dateHint(m)}
+                </View>
+                <View className="muted" style={{ marginTop: 6 }}>
+                  {previewOf(m)}
                 </View>
               </View>
             ))}
+            {history.length > 0 && (
+              <View className="muted" style={{ marginTop: 14 }}>
+                点一份尺码会填进下面的表单，改完保存就是新档案
+              </View>
+            )}
           </View>
         )}
 

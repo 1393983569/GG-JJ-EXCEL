@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  Alert,
   App,
   Button,
   Card,
@@ -19,7 +20,7 @@ import {
   Tag,
   Typography,
 } from 'antd'
-import { ArrowLeftOutlined, AuditOutlined, DownloadOutlined, EditOutlined, StarOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, AuditOutlined, CheckCircleOutlined, DownloadOutlined, EditOutlined, StarOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import dayjs from 'dayjs'
 import {
@@ -45,6 +46,19 @@ function itemQtyText(it: any) {
   return ''
 }
 
+/** 备注原文是富文本，内部编辑框只改文字：段落/换行转成多行文本，标签去掉 */
+function remarkToText(html?: string) {
+  return String(html || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div)>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .trim()
+}
+
 export default function OrderDetail() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
@@ -67,8 +81,12 @@ export default function OrderDetail() {
   const [terminalPrice, setTerminalPrice] = useState(0)
   const [adjustments, setAdjustments] = useState<any[]>([])
   const [reviews, setReviews] = useState<any[]>([])
+  const [internalRemark, setInternalRemark] = useState('')
   const [loading, setLoading] = useState(true)
   const [exportOpen, setExportOpen] = useState(false)
+  const [remarkOpen, setRemarkOpen] = useState(false)
+  const [remarkText, setRemarkText] = useState('')
+  const [savingRemark, setSavingRemark] = useState(false)
   const [reviewOpen, setReviewOpen] = useState(false)
   const [adjustOpen, setAdjustOpen] = useState(false)
   const [adjustTarget, setAdjustTarget] = useState<OrderPrice | null>(null)
@@ -116,6 +134,12 @@ export default function OrderDetail() {
             pb.collection('staff').getFullList({ filter: 'role_code = "factory" && is_active = true' })
           )) || []
         )
+        const internal = await safe(() =>
+          pb.collection('order_internal_remarks').getFirstListItem<any>(`order="${id}"`)
+        )
+        setInternalRemark(internal?.remark || '')
+      } else {
+        setInternalRemark('')
       }
       setPrices((await safe(() => pb.collection('order_prices').getFullList({ filter: `order="${id}"`, expand: 'version' }))) || [])
       const tp: any = await safe(() => pb.collection('order_terminal_prices').getFirstListItem(`order="${id}"`))
@@ -233,6 +257,27 @@ export default function OrderDetail() {
     })
   }
 
+  // 工厂只能完结指派给自己的生产单；服务端会再校验一次归属和状态
+  const completeOrder = async () => {
+    Modal.confirm({
+      title: '完结订单？',
+      content: '完结后订单标记为「已完成」，审核员和代理就可以打分了。',
+      okText: '确认完结',
+      onOk: async () => {
+        try {
+          await pb.send('/api/gg/orders-complete', {
+            method: 'POST',
+            body: { order_id: id },
+          })
+          message.success('订单已完结')
+          load()
+        } catch (e: any) {
+          message.error(e?.message || '完结失败')
+        }
+      },
+    })
+  }
+
   const assignFactory = async (factoryId?: string) => {
     setAssigning(true)
     try {
@@ -262,6 +307,29 @@ export default function OrderDetail() {
       message.error(e?.message || '设置失败')
     } finally {
       setSavingVisible('')
+    }
+  }
+
+  const openRemark = () => {
+    // 没改过就以客户原文为底稿，改完存进内部表，不覆盖 orders.remark
+    setRemarkText(remarkToText(internalRemark || order?.remark || ''))
+    setRemarkOpen(true)
+  }
+
+  const saveRemark = async () => {
+    setSavingRemark(true)
+    try {
+      await pb.send('/api/gg/orders-remark', {
+        method: 'POST',
+        body: { order_id: id, remark: remarkText },
+      })
+      message.success('已保存，客户和代理看到的仍是客户原文')
+      setRemarkOpen(false)
+      load()
+    } catch (e: any) {
+      message.error(e?.message || '保存失败')
+    } finally {
+      setSavingRemark(false)
     }
   }
 
@@ -306,6 +374,11 @@ export default function OrderDetail() {
         {canReview && order.status !== 'cancelled' && (
           <Button danger onClick={closeOrder}>
             关闭订单
+          </Button>
+        )}
+        {isFactory && ['confirmed', 'producing', 'shipped'].includes(order.status) && (
+          <Button type="primary" icon={<CheckCircleOutlined />} onClick={completeOrder}>
+            完结订单
           </Button>
         )}
         {canAgentConfirm && (
@@ -363,7 +436,7 @@ export default function OrderDetail() {
               <Descriptions.Item label="地址" span={2}>
                 {order.address || '-'}
               </Descriptions.Item>
-              <Descriptions.Item label="备注" span={2}>
+              <Descriptions.Item label="客户原始备注" span={2}>
                 {order.remark ? (
                   <div
                     className="rich-remark"
@@ -373,6 +446,23 @@ export default function OrderDetail() {
                   '-'
                 )}
               </Descriptions.Item>
+              {canReview && (
+                <Descriptions.Item label="内部客户备注" span={2}>
+                  <Space direction="vertical" style={{ width: '100%' }}>
+                    {internalRemark ? (
+                      <div
+                        className="rich-remark"
+                        dangerouslySetInnerHTML={{ __html: remarkHtml(internalRemark) }}
+                      />
+                    ) : (
+                      <span style={{ color: '#999', fontSize: 12 }}>未修改，客户和代理看到的是客户原始备注</span>
+                    )}
+                    <Button size="small" icon={<EditOutlined />} onClick={openRemark}>
+                      修改备注
+                    </Button>
+                  </Space>
+                </Descriptions.Item>
+              )}
             </Descriptions>
           </Card>
 
@@ -592,6 +682,29 @@ export default function OrderDetail() {
             <Input.TextArea rows={2} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="修改客户备注"
+        open={remarkOpen}
+        onCancel={() => setRemarkOpen(false)}
+        onOk={saveRemark}
+        okText="保存"
+        confirmLoading={savingRemark}
+        width={640}
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="这里的修改只有管理员和审核员可见；客户和代理仍然看到客户原始备注。留空将恢复成客户原文。"
+        />
+        <Input.TextArea
+          rows={8}
+          value={remarkText}
+          placeholder="填写改写后的客户备注"
+          onChange={(e) => setRemarkText(e.target.value)}
+        />
       </Modal>
 
       <ExportWordModal

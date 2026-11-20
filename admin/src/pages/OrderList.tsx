@@ -4,6 +4,7 @@ import {
   Card,
   DatePicker,
   Input,
+  Modal,
   Select,
   Space,
   Table,
@@ -131,6 +132,24 @@ export default function OrderList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, pageSize])
 
+  // 工厂在列表直接完结，复用详情页同一个接口
+  const complete = (r: Row) => {
+    Modal.confirm({
+      title: `完结 ${r.order_no}？`,
+      content: '完结后订单标记为「已完成」，审核员和代理就可以打分了。',
+      okText: '确认完结',
+      onOk: async () => {
+        try {
+          await pb.send('/api/gg/orders-complete', { method: 'POST', body: { order_id: r.id } })
+          message.success('订单已完结')
+          load(page, pageSize)
+        } catch (e: any) {
+          message.error(e?.message || '完结失败')
+        }
+      },
+    })
+  }
+
   const columns: TableProps<Row>['columns'] = useMemo(
     () => [
       {
@@ -204,12 +223,19 @@ export default function OrderList() {
       },
       {
         title: '操作',
-        width: 90,
+        width: 110,
         fixed: 'right',
-        render: (_v, r) => <a onClick={() => navigate(`/orders/${r.id}`)}>查看</a>,
+        render: (_v, r) => (
+          <Space size={8}>
+            <a onClick={() => navigate(`/orders/${r.id}`)}>查看</a>
+            {isFactory && ['confirmed', 'producing', 'shipped'].includes(r.status) && (
+              <a onClick={() => complete(r)}>完结</a>
+            )}
+          </Space>
+        ),
       },
     ],
-    [navigate]
+    [navigate, isFactory, page, pageSize]
   )
 
   return (

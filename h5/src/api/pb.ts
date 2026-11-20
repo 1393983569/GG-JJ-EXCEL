@@ -144,6 +144,26 @@ export type Measurement = {
   data: Record<string, any>
   fabric?: string
   remark?: string
+  /** PocketBase 自动字段，用来提示客户这份尺寸是什么时候录的 */
+  created?: string
+  updated?: string
+}
+
+const fmtDay = (v?: string) => {
+  if (!v) return ''
+  // PocketBase 的 "2026-11-19 08:00:00.000Z" 直接交给 iOS/Safari 会解析出 Invalid Date
+  const d = new Date(String(v).replace(' ', 'T'))
+  if (isNaN(d.getTime())) return ''
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+}
+
+/** 客户看不懂编号，标一句录入时间；改过就把修改日期也带上 */
+export function dateHint(m: Measurement) {
+  const c = fmtDay(m.created)
+  const u = fmtDay(m.updated)
+  if (!c) return '已保存的尺寸信息'
+  if (u && u !== c) return `${c} 录入 · ${u} 更新`
+  return `${c} 录入的尺寸信息`
 }
 
 const FIELD_LABELS: Record<string, string> = {

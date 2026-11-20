@@ -53,9 +53,19 @@ routerAdd("POST", "/api/gg/orders-review", (c) => {
   return require(`${__hooks}/lib/core.js`).handleReview(c)
 })
 
+// 管理员/审核员改写客户备注：客户和代理仍看 orders.remark 原文
+routerAdd("POST", "/api/gg/orders-remark", (c) => {
+  return require(`${__hooks}/lib/core.js`).handleInternalRemark(c)
+})
+
 // 满意度打分（审核员 / 代理 / 管理员）
 routerAdd("POST", "/api/gg/orders-score", (c) => {
   return require(`${__hooks}/lib/core.js`).handleScore(c)
+})
+
+// 工厂完结订单：写完 done 后审核员/代理才能打分
+routerAdd("POST", "/api/gg/orders-complete", (c) => {
+  return require(`${__hooks}/lib/core.js`).handleFactoryComplete(c)
 })
 
 // 调价 / 固定价（审核员 / 管理员）
@@ -133,6 +143,11 @@ onRecordDeleteRequest((e) => {
 onRecordDeleteRequest((e) => {
   throw new ForbiddenError("项目不能直接删除，请在「定制项目」里点删除做停用处理")
 }, "items")
+
+// 量体档案同理：订单存的是 measurement 关系的 id，真删会让老订单断链
+onRecordDeleteRequest((e) => {
+  throw new ForbiddenError("量体档案不能直接删除，请在「历史尺码」里删除")
+}, "measurements")
 
 // 代理归属只在下单时确定：任何后台改派一律拒绝
 onRecordUpdateRequest((e) => {

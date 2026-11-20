@@ -86,6 +86,16 @@ export type Order = {
   }
 }
 
+/** 管理员/审核员改写后的客户备注；客户和代理读不到这张表 */
+export type OrderInternalRemark = {
+  id: string
+  order: string
+  remark: string
+  operator?: string
+  created: string
+  updated: string
+}
+
 export type Measurement = {
   id: string
   code: string

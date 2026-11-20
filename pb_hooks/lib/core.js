@@ -873,6 +873,57 @@ function handleReview(c) {
   return c.json(200, { review_status: "approved" })
 }
 
+// ---------------------------------------------------------------- 内部客户备注
+
+// POST /api/gg/orders-remark
+// body: { order_id, remark }
+// 管理员/审核员改写后的备注单独存表；客户和代理仍然只读 orders.remark 原文。
+// remark 传空串表示恢复成客户原文（删掉隔离记录）。
+function handleInternalRemark(c) {
+  const staff = currentStaff(c)
+  if (!staff || !isRole(staff, ["reviewer", "admin"])) {
+    return c.json(403, { message: "仅审核员或管理员可修改客户备注" })
+  }
+
+  const body = reqInfo(c).body || {}
+  const orderId = body.order_id || ""
+  if (!orderId) return c.json(400, { message: "缺少订单 ID" })
+  if (body.remark === undefined || body.remark === null) {
+    return c.json(400, { message: "缺少备注内容" })
+  }
+
+  const clean = remark.sanitizeRemark(body.remark)
+  if (clean.length > 5000) return c.json(400, { message: "备注最多 5000 个字符" })
+
+  try {
+    $app.findRecordById("orders", orderId)
+  } catch (e) {
+    return c.json(404, { message: "订单不存在" })
+  }
+
+  let rec = null
+  try {
+    rec = $app.findFirstRecordByFilter("order_internal_remarks", "order = {:o}", { o: orderId })
+  } catch (e) {
+    rec = null
+  }
+
+  if (!clean) {
+    if (rec) $app.delete(rec)
+    writeLog(orderId, staff.id, "remark_reset", { by: "internal" })
+    return c.json(200, { remark: "" })
+  }
+
+  if (!rec) rec = new Record($app.findCollectionByNameOrId("order_internal_remarks"))
+  rec.set("order", orderId)
+  rec.set("remark", clean)
+  rec.set("operator", staff.id)
+  $app.save(rec)
+  writeLog(orderId, staff.id, "remark_update", { by: "internal" })
+
+  return c.json(200, { remark: clean })
+}
+
 // ---------------------------------------------------------------- 代理核对
 
 // POST /api/gg/orders-agent-confirm
@@ -993,6 +1044,42 @@ function handleScore(c) {
 
   writeLog(orderId, staff.id, "score", { score: score })
   return c.json(200, { score: score })
+}
+
+// POST /api/gg/orders-complete
+// body: { order_id }
+// 工厂完结生产单：写完 done 后审核员/代理才能打分
+function handleFactoryComplete(c) {
+  const staff = currentStaff(c)
+  if (!staff || !isRole(staff, ["factory"])) {
+    return c.json(403, { message: "仅工厂账号可完结订单" })
+  }
+
+  const body = reqInfo(c).body || {}
+  const orderId = body.order_id || ""
+  if (!orderId) return c.json(400, { message: "缺少订单 ID" })
+
+  let order
+  try {
+    order = $app.findRecordById("orders", orderId)
+  } catch (e) {
+    return c.json(404, { message: "订单不存在" })
+  }
+
+  if (relId(order, "factory") !== staff.id) {
+    return c.json(403, { message: "只能完结指派给自己的订单" })
+  }
+
+  const status = order.getString("status")
+  if (status === "done") return c.json(400, { message: "订单已完结" })
+  if (status === "cancelled") return c.json(400, { message: "订单已关闭，不能完结" })
+  if (status === "pending") return c.json(400, { message: "订单尚未确认，不能完结" })
+
+  order.set("status", "done")
+  $app.save(order)
+  writeLog(orderId, staff.id, "factory_complete", { from: status })
+
+  return c.json(200, { status: "done" })
 }
 
 // ---------------------------------------------------------------- 调价
@@ -1475,7 +1562,9 @@ module.exports = {
   handleCreateOrder: handleCreateOrder,
   handleAgentConfirm: handleAgentConfirm,
   handleReview: handleReview,
+  handleInternalRemark: handleInternalRemark,
   handleScore: handleScore,
+  handleFactoryComplete: handleFactoryComplete,
   handleAdjust: handleAdjust,
   handleUpsertPrice: handleUpsertPrice,
   handleItemPrices: handleItemPrices,

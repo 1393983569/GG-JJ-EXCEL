@@ -9,6 +9,7 @@ import {
   LogoutOutlined,
   AppstoreOutlined,
   ShopOutlined,
+  SearchOutlined,
 } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from './auth'
@@ -21,6 +22,13 @@ const H5_URL = ((import.meta.env.VITE_H5_URL as string) || 'http://localhost:100
 const MENUS = [
   { key: '/orders', code: 'orders', label: '订单管理', icon: <ShoppingCartOutlined /> },
   { key: '/measurements', code: 'measurements', label: '量体档案', icon: <ProfileOutlined /> },
+  {
+    key: '/pattern-similarity',
+    code: 'pattern_similarity',
+    label: '版型相似度',
+    icon: <SearchOutlined />,
+    internalOnly: true,
+  },
   { key: '/items', code: 'items', label: '定制项目', icon: <TagsOutlined /> },
   // 代理看到的是「我的店铺」，内部看到的是「总部店铺」，同一个页面
   { key: '/shop', code: 'shop', label: '我的店铺', icon: <ShopOutlined /> },
@@ -36,10 +44,15 @@ export default function AppLayout() {
   const location = useLocation()
 
   const isAdmin = (user as any)?.role_code === 'admin'
+  const roleCode = (user as any)?.role_code
   // 代理专属链接：用记录 id，不放账号/手机号（服务端只认 id）
-  const isAgent = (user as any)?.role_code === 'agent'
+  const isAgent = roleCode === 'agent'
   const agentLink = `${H5_URL}/#/pages/index/index?agent=${encodeURIComponent(user?.id || '')}`
-  const items = MENUS.filter((m) => (m.adminOnly ? isAdmin : hasMenu(m.code))).map((m) => ({
+  const items = MENUS.filter((m) => {
+    if (m.adminOnly) return isAdmin
+    if (m.internalOnly) return isAdmin || roleCode === 'reviewer' || hasMenu(m.code)
+    return hasMenu(m.code)
+  }).map((m) => ({
     key: m.key,
     icon: m.icon,
     // 同一个页面：代理是「我的店铺」，内部是「总部店铺」
