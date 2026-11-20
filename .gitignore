@@ -15,6 +15,11 @@ h5/.swc/
 pb_data/
 # PocketBase 可执行文件（本地下载，无需入库）
 pocketbase.exe
+pocketbase
+
+# 部署打包产物
+deploy.tgz
+*.tgz
 
 # 临时脚本 / 日志
 .tmp_*
